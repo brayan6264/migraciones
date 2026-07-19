@@ -1,0 +1,98 @@
+### Salud
+GET http://localhost:8000/health/live
+
+### Capacidades (sin secretos)
+GET http://localhost:8000/capabilities
+
+### Probar conexión a Google Drive
+POST http://localhost:8000/connections/google-drive/test
+
+### Probar conexión FTP/FTPS
+POST http://localhost:8000/connections/ftp/test
+
+### Crear snapshot completo
+POST http://localhost:8000/discovery-runs
+Content-Type: application/json
+
+{
+  "root_folder_id": "TU_FOLDER_ID_AQUI"
+}
+
+### Crear snapshot parcial (primera ola prioritaria)
+POST http://localhost:8000/discovery-runs
+Content-Type: application/json
+
+{
+  "folder_ids": ["FOLDER_ID_1", "FOLDER_ID_2"]
+}
+
+### Buscar elementos en un snapshot
+GET http://localhost:8000/snapshots/SNAPSHOT_ID/items/search?text=informe&item_type=FILE
+
+### Crear un lote de migración
+POST http://localhost:8000/migration-batches
+Content-Type: application/json
+
+{
+  "snapshot_id": "SNAPSHOT_ID",
+  "name": "Primera ola - contratos",
+  "priority": 100
+}
+
+### Agregar un selector (carpeta recursiva)
+POST http://localhost:8000/migration-batches/BATCH_ID/selectors
+Content-Type: application/json
+
+{
+  "kind": "FOLDER_RECURSIVE",
+  "value": "FOLDER_ID",
+  "include": true
+}
+
+### Excluir un elemento específico
+POST http://localhost:8000/migration-batches/BATCH_ID/selectors
+Content-Type: application/json
+
+{
+  "kind": "EXPLICIT_IDS",
+  "value": "ITEM_ID_A_EXCLUIR",
+  "include": false
+}
+
+### Generar el plan (dry-run: no escribe en FTP)
+POST http://localhost:8000/migration-batches/BATCH_ID/plan
+
+### Ver la vista previa antes de ejecutar
+GET http://localhost:8000/migration-batches/BATCH_ID/preview
+
+### Ver elementos pendientes de revisión de nombre
+GET http://localhost:8000/migration-batches/BATCH_ID/name-reviews
+
+### Sobrescribir manualmente un nombre destino
+PATCH http://localhost:8000/migration-items/ITEM_ID/destination-name
+Content-Type: application/json
+
+{
+  "new_base_name": "147_INF_BIM_V02",
+  "changed_by": "brayan6264@gmail.com"
+}
+
+### Aprobar un nombre en revisión
+POST http://localhost:8000/migration-items/ITEM_ID/approve-name
+Content-Type: application/json
+
+{
+  "changed_by": "brayan6264@gmail.com"
+}
+
+### Iniciar la migración (procesa de forma síncrona hasta max_items elementos)
+POST http://localhost:8000/migration-batches/BATCH_ID/start?max_items=20
+
+### Ver estado del lote
+GET http://localhost:8000/migration-batches/BATCH_ID/status
+
+### Ver el reporte final
+GET http://localhost:8000/migration-batches/BATCH_ID/report
+
+### Reintentar los elementos fallidos
+POST http://localhost:8000/migration-batches/BATCH_ID/retry-failed

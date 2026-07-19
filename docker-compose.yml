@@ -1,0 +1,47 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: document_engine
+      POSTGRES_USER: document_engine
+      POSTGRES_PASSWORD: document_engine
+    ports:
+      - "5432:5432"
+    volumes:
+      - document_engine_db:/var/lib/postgresql/data
+
+  # Servidor FTP local solo para pruebas manuales de desarrollo.
+  # NO usar esta imagen ni estas credenciales en producción.
+  ftp:
+    image: fauria/vsftpd
+    environment:
+      FTP_USER: dev
+      FTP_PASS: dev
+      PASV_ADDRESS: 127.0.0.1
+      PASV_MIN_PORT: 21100
+      PASV_MAX_PORT: 21110
+    ports:
+      - "21:21"
+      - "21100-21110:21100-21110"
+    volumes:
+      - document_engine_ftp:/home/vsftpd
+
+  api:
+    build: .
+    command: uvicorn document_engine.main:app --host 0.0.0.0 --port 8000
+    environment:
+      DATABASE_URL: postgresql+psycopg://document_engine:document_engine@db:5432/document_engine
+      APP_ENV: development
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+    volumes:
+      - ./config:/app/config
+      - ./data:/app/data
+
+volumes:
+  document_engine_db:
+  document_engine_ftp:

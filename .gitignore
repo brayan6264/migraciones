@@ -1,0 +1,63 @@
+# Entornos virtuales
+.venv/
+venv/
+env/
+ENV/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+
+# Variables de entorno y credenciales
+.env
+.env.*
+!.env.example
+*service-account*.json
+*credentials*.json
+credentials/
+secrets/
+*.pem
+*.key
+
+# Base de datos local de desarrollo
+*.db
+*.sqlite
+*.sqlite3
+
+# Archivos temporales de la aplicación
+data/
+!data/.gitkeep
+
+# Tests y herramientas de calidad
+.pytest_cache/
+.hypothesis/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Editores / IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude / asistentes
+.claude/
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+logs/

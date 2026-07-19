@@ -1,0 +1,18 @@
+# Formatos de exportación para tipos nativos de Google Workspace (sección 7.2).
+# Un mime type de Google Workspace sin entrada aquí queda BLOCKED con
+# DRIVE_EXPORT_UNSUPPORTED durante el planning.
+application/vnd.google-apps.document:
+  mime_type: application/pdf
+  extension: pdf
+
+application/vnd.google-apps.spreadsheet:
+  mime_type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+  extension: xlsx
+
+application/vnd.google-apps.presentation:
+  mime_type: application/vnd.openxmlformats-officedocument.presentationml.presentation
+  extension: pptx
+
+application/vnd.google-apps.drawing:
+  mime_type: application/pdf
+  extension: pdf
