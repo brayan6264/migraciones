@@ -17,3 +17,11 @@ def build_drive_client(service_account_file: str) -> Resource:
         service_account_file, scopes=SCOPES
     )
     return build("drive", "v3", credentials=credentials, cache_discovery=False)
+
+
+def build_drive_client_api_key(api_key: str) -> Resource:
+    """Cliente de solo lectura autenticado por API key (sin OAuth). Solo
+    puede acceder a archivos/carpetas compartidos públicamente ("cualquiera
+    con el enlace"); no sirve para contenido restringido a usuarios/cuentas
+    específicas."""
+    return build("drive", "v3", developerKey=api_key, cache_discovery=False)

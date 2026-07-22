@@ -15,6 +15,7 @@ class Settings(BaseSettings):
 
     google_auth_mode: str = "service_account"
     google_service_account_file: str | None = None
+    google_api_key: str | None = None
     google_root_folder_id: str | None = None
     google_shared_drive_id: str | None = None
 
@@ -42,6 +43,8 @@ class Settings(BaseSettings):
     validation_level: str = "BASIC"
 
     internal_api_key: str | None = None
+
+    frontend_origins: str = "http://localhost:5173"
 
     abbreviations_file: Path = Path("config/abbreviations.yml")
     export_formats_file: Path = Path("config/export_formats.yml")

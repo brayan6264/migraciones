@@ -6,12 +6,40 @@ from sqlalchemy.orm import Session
 
 from document_engine.adapters.database.models import RepositorySnapshot as RepositorySnapshotModel
 from document_engine.api.dependencies import get_db, get_source_repository, require_api_key
-from document_engine.api.schemas import DiscoveryRunCreate, RepositoryItemOut, SnapshotOut
+from document_engine.api.schemas import DiscoveryRunCreate, DriveBrowseItemOut, RepositoryItemOut, SnapshotOut
 from document_engine.application.discovery_service import DiscoveryService
 from document_engine.application.search_service import SnapshotSearchService
+from document_engine.domain.enums import ItemType
 from document_engine.ports.source_repository import SourceRepositoryPort
+from document_engine.settings import Settings, get_settings
 
 router = APIRouter(tags=["discovery"], dependencies=[Depends(require_api_key)])
+
+
+@router.get("/drive/browse", response_model=list[DriveBrowseItemOut])
+def browse_drive(
+    folder_id: str | None = None,
+    settings: Settings = Depends(get_settings),
+    source: SourceRepositoryPort = Depends(get_source_repository),
+):
+    """Lista en vivo el contenido de una carpeta de Drive, sin persistir
+    nada (a diferencia de /discovery-runs). Pensado para poblar un
+    explorador de carpetas en la UI sin que el usuario conozca IDs."""
+    target = folder_id or settings.google_root_folder_id
+    if not target:
+        raise HTTPException(400, "GOOGLE_ROOT_FOLDER_ID no configurado y no se indicó folder_id")
+    children = [item for item in source.list_children(target) if item.item_type != ItemType.SHORTCUT]
+    children.sort(key=lambda item: (item.item_type != ItemType.FOLDER, item.name.lower()))
+    return [
+        DriveBrowseItemOut(
+            id=item.source_item_id,
+            name=item.name,
+            type=item.item_type.value,
+            mime_type=item.mime_type,
+            size=item.size,
+        )
+        for item in children
+    ]
 
 
 @router.post("/discovery-runs", response_model=SnapshotOut)

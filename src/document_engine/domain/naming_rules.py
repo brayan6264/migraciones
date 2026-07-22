@@ -115,6 +115,7 @@ def normalize_name(
     consecutive: int | None = None,
     version: int | None = None,
     date: str | None = None,
+    is_folder: bool = False,
 ) -> NormalizedName:
     """Ejecuta los pasos 1-11 del pipeline de normalización (sección 5.2).
 
@@ -122,7 +123,13 @@ def normalize_name(
     cuando el resultado compuesto supera `MAX_BASE_LENGTH`.
     """
     abbreviations = abbreviations or {}
-    raw_base, extension = split_base_and_extension(original_name)
+    if is_folder:
+        # Las carpetas no tienen extensión: un "." en su nombre (p. ej.
+        # "1. Preoperativo") no debe interpretarse como separador de
+        # extensión de archivo.
+        raw_base, extension = original_name, ""
+    else:
+        raw_base, extension = split_base_and_extension(original_name)
 
     descriptive = sanitize_base(raw_base)
     descriptive = apply_abbreviations(descriptive, abbreviations)
@@ -224,6 +231,7 @@ class NamingRulesEngine:
         consecutive: int | None = None,
         version: int | None = None,
         date: str | None = None,
+        is_folder: bool = False,
     ) -> NormalizedName:
         return normalize_name(
             original_name,
@@ -232,6 +240,7 @@ class NamingRulesEngine:
             consecutive=consecutive,
             version=version,
             date=date,
+            is_folder=is_folder,
         )
 
     def resolve_collision(

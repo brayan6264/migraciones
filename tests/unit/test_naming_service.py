@@ -195,6 +195,38 @@ def test_collision_between_two_ai_suggestions_gets_suffixed(naming_engine):
     assert resolved_b.rename_method == RenameMethod.COLLISION_RESOLUTION.value
 
 
+def test_local_context_includes_sibling_source_names_to_avoid_ambiguous_names(naming_engine):
+    """Sin contexto de hermanos, la IA nombra cada archivo aislado y puede
+    producir el mismo nombre para "Resumen" y "Transcripción" de un mismo
+    proyecto, distinguibles solo por un sufijo de colisión sin significado."""
+    db = make_session()
+    batch = make_batch(db)
+    item_a = make_waiting_item(
+        db,
+        batch.id,
+        source_name="Seguimiento proyecto Pacífico Resumen.txt",
+        source_path="ROOT/Carpeta A/Seguimiento proyecto Pacífico Resumen.txt",
+        planned_destination_path="ROOT/CARPETA_A/SEGUIMIENTO_PROYECTO_PACIF",
+    )
+    item_b = make_waiting_item(
+        db,
+        batch.id,
+        source_name="Seguimiento proyecto Pacífico Transcripción.txt",
+        source_path="ROOT/Carpeta A/Seguimiento proyecto Pacífico Transcripción.txt",
+        planned_destination_path="ROOT/CARPETA_A/SEGUIMIENTO_PROYECTO_TRANS",
+    )
+
+    provider = FakeAINamingProvider(
+        [AINamingResponse(suggested_name="SEGUIMIENTO_PAC_TRANSCRIP", reason="x", confidence=0.9, requires_review=False)]
+    )
+    service = NamingAssistantService(db, provider, naming_engine)
+
+    service.resolve_item(item_b.id)
+
+    assert len(provider.calls) == 1
+    assert item_a.source_name in provider.calls[0].local_context
+
+
 def test_resolve_item_rejects_non_ai_items_without_force(naming_engine):
     db = make_session()
     batch = make_batch(db)

@@ -14,7 +14,13 @@ REGLAS:
 - Si se proporciona una fecha, consérvala al final en AAAAMMDD.
 - Utiliza el árbol de carpetas para conservar el significado más útil.
 - Usa abreviaturas estandarizadas.
-- El nombre debe identificar el contenido sin necesidad de abrir el archivo."""
+- El nombre debe identificar el contenido sin necesidad de abrir el archivo.
+- Si CONTEXTO LOCAL lista otros archivos de la misma carpeta destino, tu nombre
+  debe distinguirse claramente de ellos: prioriza conservar la palabra que
+  identifica el tipo o contenido específico de ESTE archivo (ej. RESUMEN,
+  TRANSCRIPCION, GRABACION, ACTA) por encima de palabras genéricas que se
+  repiten en todos ellos (ej. nombre del proyecto). Nunca dependas de un
+  sufijo numérico de colisión para que el nombre tenga sentido."""
 
 
 def build_user_prompt(request: AINamingRequest) -> str:

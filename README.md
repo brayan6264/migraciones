@@ -8,7 +8,7 @@ Ver especificación completa en `AGENTE_DOCUMENT_ENGINE.md`.
 
 ## Estado actual: MVP funcional de punta a punta
 
-Todas las pruebas: **98/98 pasan** (`pytest tests/ -q`). Ver [DECISIONS.md](DECISIONS.md)
+Todas las pruebas: **104/104 pasan** (`pytest tests/ -q`). Ver [DECISIONS.md](DECISIONS.md)
 para decisiones técnicas y limitaciones conocidas, y la sección
 ["Arquitectura e implementación"](#arquitectura-e-implementación) al final
 de este documento para el detalle completo de cada componente.
@@ -44,12 +44,24 @@ pytest tests/integration -q         # solo la API (FastAPI TestClient)
 
 ## Configuración de Google Drive
 
+Dos modos posibles, controlados por `GOOGLE_AUTH_MODE`:
+
+**`service_account` (recomendado, acceso a carpetas privadas o compartidas):**
+
 1. Crear una cuenta de servicio en Google Cloud, habilitar la Drive API.
 2. Compartir la carpeta raíz (o unidad compartida) con el correo de la cuenta
    de servicio, con permiso de lector.
 3. Descargar el JSON de credenciales y apuntar `GOOGLE_SERVICE_ACCOUNT_FILE`
    a su ruta. Configurar `GOOGLE_ROOT_FOLDER_ID` (y `GOOGLE_SHARED_DRIVE_ID`
    si aplica).
+
+**`api_key` (solo para carpetas públicas, "cualquiera con el enlace"):**
+
+1. Habilitar la Drive API en el proyecto de Google Cloud y generar una API
+   key en "Credenciales".
+2. Configurar `GOOGLE_API_KEY` y `GOOGLE_ROOT_FOLDER_ID`.
+3. Limitación: solo funciona con contenido compartido públicamente; no sirve
+   para carpetas privadas ni para unidades compartidas restringidas.
 
 ## Configuración de FTP/FTPS
 
@@ -87,6 +99,25 @@ uvicorn document_engine.main:app --reload
 Ver [examples.http](examples.http) para el flujo completo de solicitudes
 (discovery → batch → selectores → plan → preview → revisión de nombres →
 start → status → report).
+
+## Panel web (frontend)
+
+Existe un panel visual (repo separado, `document-engine-frontend`) para no
+tener que usar `curl`/`examples.http` a mano: explorador de Drive con
+checkboxes, armado de lotes, revisión de nombres y ejecución con progreso en
+vivo — pensado para que un usuario sin conocimientos técnicos pueda migrar
+sin conocer IDs de Drive ni la API REST.
+
+Para levantarlo junto a este backend:
+
+1. Este backend debe estar corriendo (`uvicorn document_engine.main:app --reload`).
+2. Habilitar CORS agregando el origen del panel a `FRONTEND_ORIGINS` en el
+   `.env` (por defecto ya incluye `http://localhost:5173`, el puerto de
+   desarrollo de Vite).
+3. En el repo del frontend: `npm install && npm run dev`.
+
+Instrucciones completas (variables de entorno, generación de tipos desde
+`openapi.json`, build de producción) en el `README.md` de ese repo.
 
 ## Ejecución del worker (proceso independiente)
 

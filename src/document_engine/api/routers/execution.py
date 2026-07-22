@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -9,16 +9,19 @@ from document_engine.adapters.database.models import MigrationBatch as Migration
 from document_engine.adapters.database.models import MigrationItem as MigrationItemModel
 from document_engine.api.dependencies import (
     get_db,
+    get_db_session_factory,
     get_destination_repository,
     get_source_repository,
     get_temp_storage,
     require_api_key,
 )
 from document_engine.api.schemas import BatchReportOut
+from document_engine.application.background_runner import is_running, run_batch_in_background
 from document_engine.application.migration_service import Builder
 from document_engine.application.recovery_service import RecoveryService
 from document_engine.application.validation_service import generate_batch_report
 from document_engine.domain.enums import MigrationItemState
+from document_engine.domain.state_machine import transition
 from document_engine.ports.destination_repository import DestinationRepositoryPort
 from document_engine.ports.source_repository import SourceRepositoryPort
 from document_engine.adapters.filesystem.temp_storage import TempFileStorage
@@ -53,8 +56,6 @@ def start_batch(
     # Confirma el plan: los elementos PLANNED que no requieren revisión pasan
     # a READY. Los que están en WAITING_REVIEW se quedan ahí hasta que un
     # revisor los apruebe explícitamente (name_review router).
-    from document_engine.domain.state_machine import transition
-
     stmt = (
         select(MigrationItemModel)
         .where(MigrationItemModel.batch_id == batch_id)
@@ -76,6 +77,49 @@ def start_batch(
         processed.append({"id": resolved.id, "state": resolved.state})
 
     return {"batch_id": batch_id, "processed": processed}
+
+
+@router.post("/migration-batches/{batch_id}/run")
+def run_batch(
+    batch_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    session_factory=Depends(get_db_session_factory),
+    source: SourceRepositoryPort = Depends(get_source_repository),
+    destination: DestinationRepositoryPort = Depends(get_destination_repository),
+    temp_storage: TempFileStorage = Depends(get_temp_storage),
+) -> dict:
+    """Arranca el procesamiento completo del lote en segundo plano, en el
+    proceso del servidor: sigue corriendo aunque se cierre la pestaña del
+    navegador o el frontend entero (a diferencia de `/start`, que solo
+    procesa una tanda y depende de que el cliente vuelva a llamarlo).
+    Se detiene solo al terminar, o si se pausa/cancela el lote."""
+    batch = _get_batch(db, batch_id)
+
+    stmt = (
+        select(MigrationItemModel)
+        .where(MigrationItemModel.batch_id == batch_id)
+        .where(MigrationItemModel.state == MigrationItemState.PLANNED.value)
+    )
+    for planned_item in db.execute(stmt).scalars().all():
+        planned_item.state = transition(MigrationItemState.PLANNED, MigrationItemState.READY).value
+
+    if is_running(batch_id):
+        db.commit()
+        return {"batch_id": batch_id, "status": "already_running"}
+
+    batch.status = "RUNNING"
+    db.commit()
+
+    background_tasks.add_task(
+        run_batch_in_background,
+        batch_id,
+        session_factory=session_factory,
+        source=source,
+        destination=destination,
+        temp_storage=temp_storage,
+    )
+    return {"batch_id": batch_id, "status": "started"}
 
 
 @router.post("/migration-batches/{batch_id}/pause")
@@ -124,7 +168,12 @@ def batch_status(batch_id: str, db: Session = Depends(get_db)) -> dict:
     counts: dict[str, int] = {}
     for item in items:
         counts[item.state] = counts.get(item.state, 0) + 1
-    return {"batch_id": batch_id, "status": batch.status, "counts_by_state": counts}
+    return {
+        "batch_id": batch_id,
+        "status": batch.status,
+        "counts_by_state": counts,
+        "background_running": is_running(batch_id),
+    }
 
 
 @router.get("/migration-batches/{batch_id}/events")

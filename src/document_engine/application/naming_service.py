@@ -8,7 +8,8 @@ from sqlalchemy.orm import Session
 
 from document_engine.adapters.database.models import JournalEvent, NameDecision
 from document_engine.adapters.database.models import MigrationItem as MigrationItemModel
-from document_engine.domain.enums import MigrationItemState, RenameMethod
+from document_engine.application.planning_service import cascade_folder_rename
+from document_engine.domain.enums import ItemType, MigrationItemState, RenameMethod
 from document_engine.domain.errors import DocumentEngineError
 from document_engine.domain.naming_rules import (
     MAX_BASE_LENGTH,
@@ -132,6 +133,44 @@ class NamingAssistantService:
             bases.add(base)
         return bases
 
+    def _sibling_context(self, item: MigrationItemModel) -> str:
+        """Nombres originales de otros elementos que caerán en la misma
+        carpeta destino. Sin esto, la IA nombra cada archivo de forma
+        aislada y puede producir nombres casi idénticos para archivos con
+        un prefijo largo compartido (ej. "Resumen" vs "Transcripción" del
+        mismo proyecto), distinguibles luego solo por un sufijo de colisión
+        que no dice nada del contenido."""
+        parent_path = (
+            item.planned_destination_path.rsplit("/", 1)[0]
+            if item.planned_destination_path and "/" in item.planned_destination_path
+            else ""
+        )
+        siblings = (
+            self._db.execute(
+                select(MigrationItemModel)
+                .where(MigrationItemModel.batch_id == item.batch_id)
+                .where(MigrationItemModel.id != item.id)
+                .where(MigrationItemModel.item_type == item.item_type)
+            )
+            .scalars()
+            .all()
+        )
+        names: list[str] = []
+        for sibling in siblings:
+            sibling_parent = (
+                sibling.planned_destination_path.rsplit("/", 1)[0]
+                if sibling.planned_destination_path and "/" in sibling.planned_destination_path
+                else ""
+            )
+            if sibling_parent != parent_path:
+                continue
+            names.append(sibling.source_name)
+        if not names:
+            return ""
+        return "Otros archivos en la misma carpeta destino, no uses un nombre igual o ambiguo respecto a ellos: " + "; ".join(
+            names
+        )
+
     def resolve_item(
         self,
         item_id: str,
@@ -153,8 +192,12 @@ class NamingAssistantService:
                 code="NAME_AI_NOT_APPLICABLE",
             )
 
-        normalized = self._naming.normalize(item.source_name, obtc_code=obtc_code, date=date)
+        normalized = self._naming.normalize(
+            item.source_name, obtc_code=obtc_code, date=date, is_folder=item.item_type == ItemType.FOLDER.value
+        )
         extension = item.extension or normalized.extension
+        if not local_context:
+            local_context = self._sibling_context(item)
         # Ruta de ancestros de origen: solo para dar contexto al modelo y la huella de caché.
         ancestor_path = item.source_path.rsplit("/", 1)[0] if "/" in item.source_path else ""
         # Carpeta destino ya planificada: es la que se usa para reconstruir la ruta final.
@@ -246,9 +289,12 @@ class NamingAssistantService:
         final_path = f"{dest_parent_path}/{final_name}" if dest_parent_path else final_name
 
         previous_state = item.state
+        old_path = item.planned_destination_path
         item.planned_destination_name = final_name
         item.planned_destination_path = final_path
         item.rename_method = method.value
+        if item.item_type == ItemType.FOLDER.value:
+            cascade_folder_rename(self._db, item.batch_id, old_path, final_path)
         if requires_review:
             if item.state != MigrationItemState.WAITING_REVIEW.value:
                 item.state = transition(MigrationItemState(item.state), MigrationItemState.WAITING_REVIEW).value

@@ -38,12 +38,19 @@ def capabilities(settings: Settings = Depends(get_settings)) -> dict:
 
 @router.post("/connections/google-drive/test", dependencies=[Depends(require_api_key)])
 def test_google_drive(settings: Settings = Depends(get_settings)) -> ConnectivityTestOut:
-    if not settings.google_service_account_file:
+    if settings.google_auth_mode == "api_key":
+        if not settings.google_api_key:
+            return ConnectivityTestOut(ok=False, detail="GOOGLE_API_KEY no configurado")
+    elif not settings.google_service_account_file:
         return ConnectivityTestOut(ok=False, detail="GOOGLE_SERVICE_ACCOUNT_FILE no configurado")
     try:
-        from document_engine.adapters.google_drive.client import build_drive_client
+        from document_engine.adapters.google_drive.client import build_drive_client, build_drive_client_api_key
 
-        client = build_drive_client(settings.google_service_account_file)
+        client = (
+            build_drive_client_api_key(settings.google_api_key)
+            if settings.google_auth_mode == "api_key"
+            else build_drive_client(settings.google_service_account_file)
+        )
         if settings.google_root_folder_id:
             client.files().get(fileId=settings.google_root_folder_id, fields="id,name").execute()
         return ConnectivityTestOut(ok=True, detail="Conexión y credenciales válidas")

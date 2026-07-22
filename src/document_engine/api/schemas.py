@@ -23,6 +23,42 @@ class DiscoveryRunCreate(BaseModel):
     folder_ids: list[str] | None = Field(default=None, description="Para un snapshot parcial")
 
 
+class DriveBrowseItemOut(BaseModel):
+    id: str
+    name: str
+    type: str
+    mime_type: str | None
+    size: int | None
+
+
+class AncestorRef(BaseModel):
+    id: str
+    name: str
+
+
+class SelectionNode(BaseModel):
+    id: str
+    name: str
+    type: str  # FOLDER | FILE
+    ancestor_chain: list[AncestorRef] = Field(
+        default_factory=list, description="Desde la raíz configurada hasta el padre de este ítem"
+    )
+
+
+class BatchCreateFromSelection(BaseModel):
+    name: str
+    priority: int = Field(default=50, ge=0, le=100)
+    selections: list[SelectionNode]
+    destination_folder_name: str | None = Field(
+        default=None,
+        description=(
+            "Si se indica, todo lo seleccionado queda dentro de esta carpeta en el FTP. "
+            "Si se omite, se migra directo a la raíz configurada (FTP_ROOT_PATH), "
+            "conservando los nombres de carpeta tal como están en Drive."
+        ),
+    )
+
+
 class RepositoryItemOut(BaseModel):
     source_item_id: str
     parent_source_id: str | None

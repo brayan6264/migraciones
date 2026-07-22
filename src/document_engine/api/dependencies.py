@@ -6,7 +6,7 @@ from functools import lru_cache
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 
-from document_engine.adapters.database.session import get_session_factory
+from document_engine.adapters.database.session import get_session_factory as _get_session_factory
 from document_engine.adapters.filesystem.temp_storage import TempFileStorage
 from document_engine.domain.naming_rules import NamingRulesEngine
 from document_engine.ports.ai_naming_provider import AINamingProviderPort
@@ -16,12 +16,21 @@ from document_engine.settings import Settings, get_settings
 
 
 def get_db() -> Iterator[Session]:
-    session_factory = get_session_factory()
+    session_factory = _get_session_factory()
     db = session_factory()
     try:
         yield db
     finally:
         db.close()
+
+
+def get_db_session_factory():
+    """La session factory activa, separada de `get_db` para que tareas en
+    segundo plano (que viven más allá del request HTTP) puedan crear su
+    propia sesión sin depender del generador `yield`/`finally` de `get_db`.
+    Sobreescribible en tests igual que las demás dependencias, para que el
+    background task use la misma base de datos aislada que el test."""
+    return _get_session_factory()
 
 
 def require_api_key(
@@ -52,13 +61,22 @@ def get_temp_storage(settings: Settings = Depends(get_settings)) -> TempFileStor
 def get_source_repository(settings: Settings = Depends(get_settings)) -> SourceRepositoryPort:
     """Construye el adaptador real de Google Drive a partir de `Settings`.
     En pruebas se sobreescribe con `app.dependency_overrides`."""
-    from document_engine.adapters.google_drive.client import build_drive_client
     from document_engine.adapters.google_drive.drive_repository import GoogleDriveRepository
 
+    client = _build_drive_client(settings)
+    return GoogleDriveRepository(client, shared_drive_id=settings.google_shared_drive_id)
+
+
+def _build_drive_client(settings: Settings):
+    from document_engine.adapters.google_drive.client import build_drive_client, build_drive_client_api_key
+
+    if settings.google_auth_mode == "api_key":
+        if not settings.google_api_key:
+            raise HTTPException(status_code=503, detail="GOOGLE_API_KEY no configurado")
+        return build_drive_client_api_key(settings.google_api_key)
     if not settings.google_service_account_file:
         raise HTTPException(status_code=503, detail="GOOGLE_SERVICE_ACCOUNT_FILE no configurado")
-    client = build_drive_client(settings.google_service_account_file)
-    return GoogleDriveRepository(client, shared_drive_id=settings.google_shared_drive_id)
+    return build_drive_client(settings.google_service_account_file)
 
 
 def get_destination_repository(settings: Settings = Depends(get_settings)) -> DestinationRepositoryPort:

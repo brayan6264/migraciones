@@ -140,14 +140,17 @@ class GoogleDriveRepository(SourceRepositoryPort):
             raise PermanentError(
                 f"Sin permiso de descarga para {item.source_item_id}", code=DRIVE_PERMISSION_DENIED
             )
-        request = self._client.files().get_media(fileId=item.source_item_id)
-        buffer = io.BytesIO()
-        downloader = MediaIoBaseDownload(buffer, request, chunksize=8 * 1024 * 1024)
-        done = False
-        while not done:
-            _, done = downloader.next_chunk()
-        buffer.seek(offset)
-        return buffer
+        try:
+            request = self._client.files().get_media(fileId=item.source_item_id)
+            buffer = io.BytesIO()
+            downloader = MediaIoBaseDownload(buffer, request, chunksize=8 * 1024 * 1024)
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
+            buffer.seek(offset)
+            return buffer
+        except HttpError as exc:
+            raise self._translate_error(exc) from exc
 
     def export(self, item: RepositoryItem, target_mime_type: str) -> io.BytesIO:
         try:

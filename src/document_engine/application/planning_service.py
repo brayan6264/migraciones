@@ -296,7 +296,7 @@ class PlanningService:
                         state = MigrationItemState.BLOCKED
                         warnings.append("Archivos comprimidos no soportados como soporte documental")
 
-            normalized = self._naming.normalize(item.name)
+            normalized = self._naming.normalize(item.name, is_folder=item.item_type == ItemType.FOLDER.value)
             if extension:
                 normalized_full_ext = extension
             else:
@@ -433,6 +433,7 @@ class PlanningService:
                 {
                     "source_path": i.source_path,
                     "planned_destination_path": i.planned_destination_path,
+                    "item_type": i.item_type,
                     "state": i.state,
                     "rename_method": i.rename_method,
                     "priority": i.priority,
@@ -440,6 +441,30 @@ class PlanningService:
                 for i in items
             ],
         }
+
+
+def cascade_folder_rename(db: Session, batch_id: str, old_path: str, new_path: str) -> None:
+    """Si una carpeta cambia de ruta destino después de que sus hijos ya
+    fueron planificados (revisión manual o asistida por IA), propaga el
+    nuevo prefijo a los descendientes ya planificados en el mismo lote.
+    Sin esto, quedarían huérfanos apuntando a la ruta vieja de la carpeta."""
+    if not old_path or old_path == new_path:
+        return
+    old_prefix = f"{old_path}/"
+    new_prefix = f"{new_path}/"
+    descendants = (
+        db.execute(
+            select(MigrationItemModel).where(
+                MigrationItemModel.batch_id == batch_id,
+                MigrationItemModel.planned_destination_path.like(f"{old_prefix}%"),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for descendant in descendants:
+        if descendant.planned_destination_path and descendant.planned_destination_path.startswith(old_prefix):
+            descendant.planned_destination_path = new_prefix + descendant.planned_destination_path[len(old_prefix) :]
 
 
 class NameReviewService:
@@ -464,11 +489,14 @@ class NameReviewService:
             )
 
         previous_state = item.state
+        old_path = item.planned_destination_path
         final_name = f"{candidate}.{item.extension}" if item.extension else candidate
         parent_path = item.planned_destination_path.rsplit("/", 1)[0] if item.planned_destination_path and "/" in item.planned_destination_path else ""
         item.planned_destination_name = final_name
         item.planned_destination_path = f"{parent_path}/{final_name}" if parent_path else final_name
         item.rename_method = RenameMethod.MANUAL_OVERRIDE.value
+        if item.item_type == ItemType.FOLDER.value:
+            cascade_folder_rename(self._db, item.batch_id, old_path, item.planned_destination_path)
         if item.state == MigrationItemState.WAITING_REVIEW.value:
             item.state = transition(MigrationItemState.WAITING_REVIEW, MigrationItemState.READY).value
 
