@@ -48,11 +48,14 @@
    en producción y múltiples workers, se recomienda añadirlo para eliminar
    una condición de carrera entre el `SELECT` y el `UPDATE` del lease
    (documentado con un comentario en `worker/lease_manager.py`).
-3. **Resolución de accesos directos (shortcuts) no implementada**: los
-   elementos `SHORTCUT` se marcan `BLOCKED` en Planning. La sección 4.1 lo
-   permite ("cuando el destino esté dentro del alcance autorizado y no
-   genere ciclos"), pero se dejó fuera del MVP por complejidad y riesgo de
-   ciclos mal manejados.
+3. **Resolución de accesos directos (shortcuts)**: `GoogleDriveRepository.walk()`
+   sigue cada `SHORTCUT` hasta su destino real (archivo o carpeta) y lo migra
+   con el nombre y la ubicación del acceso directo, tal como lo permite la
+   sección 4.1. Protección de ciclos: si el destino ya fue visitado en ese
+   mismo recorrido (p. ej. un acceso directo que apunta a un ancestro
+   propio), o si está roto/sin permiso/apunta a otro shortcut, no se sigue
+   y el elemento queda como `SHORTCUT` sin resolver — Planning lo marca
+   `BLOCKED` como red de seguridad final.
 4. **Detección de código OBTC no implementada**: `NamingRulesEngine` acepta
    `obtc_code` como parámetro, pero no hay lógica automática que lo extraiga
    de metadatos o de la jerarquía de carpetas — la sección 24, punto 9,

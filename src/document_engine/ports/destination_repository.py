@@ -42,6 +42,11 @@ class DestinationRepositoryPort(ABC):
         """Lista los nombres reales devueltos por el servidor bajo `path`."""
 
     @abstractmethod
+    def list_directories(self, path: str) -> list[str]:
+        """Como `list_dir`, pero solo subdirectorios (para explorar el
+        servidor y elegir un destino existente, sección de selección visual)."""
+
+    @abstractmethod
     def download_to(self, remote_path: str, local_path: str) -> None:
         """Descarga el archivo remoto a `local_path`. Solo se usa para
         validación STRICT (sección 10), nunca para ejecutar el contenido."""

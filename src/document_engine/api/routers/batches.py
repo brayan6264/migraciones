@@ -39,7 +39,12 @@ def _planning_service(db: Session, naming_engine: NamingRulesEngine) -> Planning
 
 @router.post("/migration-batches", response_model=BatchOut)
 def create_batch(payload: BatchCreate, db: Session = Depends(get_db)) -> MigrationBatchModel:
-    return BatchService(db).create_batch(snapshot_id=payload.snapshot_id, name=payload.name, priority=payload.priority)
+    return BatchService(db).create_batch(
+        snapshot_id=payload.snapshot_id,
+        name=payload.name,
+        priority=payload.priority,
+        destination_base_path=payload.destination_base_path,
+    )
 
 
 @router.post("/migration-batches/from-selection", response_model=BatchOut)
@@ -52,12 +57,14 @@ def create_batch_from_selection(
     selección hecha en el explorador visual de Drive (sección "Nueva
     migración"): el usuario nunca ve ni escribe un ID.
 
-    Si `destination_folder_name` viene informado, se antepone como una
-    carpeta ancestro sintética (no existe en Drive, solo organiza el
-    destino) a la cadena de ancestros de cada selección — así todo el lote
-    queda anidado dentro de esa carpeta en el FTP. Si se omite, cada
-    selección conserva su ruta de Drive tal cual, migrando directo a la
-    raíz configurada (FTP_ROOT_PATH)."""
+    `destination_base_path` es un directorio que ya existe en el FTP
+    (elegido explorando el servidor, `GET /ftp/browse`): se usa tal cual,
+    sin pasar por el motor de normalización de nombres, porque ya existe en
+    el servidor con ese nombre exacto. Si además viene `destination_folder_name`,
+    se crea esa carpeta nueva (esta sí normalizada, como cualquier carpeta)
+    dentro del directorio elegido — o dentro de la raíz, si no se eligió
+    directorio. Si se omiten ambos, cada selección conserva su ruta de
+    Drive tal cual, migrando directo a la raíz configurada (FTP_ROOT_PATH)."""
     wrapper: AncestorRef | None = None
     folder_name = (payload.destination_folder_name or "").strip()
     if folder_name:
@@ -75,7 +82,12 @@ def create_batch_from_selection(
         for node in payload.selections
     ]
     snapshot = DiscoveryService(source, db).run_selection_snapshot(selections)
-    batch = BatchService(db).create_batch(snapshot_id=snapshot.id, name=payload.name, priority=payload.priority)
+    batch = BatchService(db).create_batch(
+        snapshot_id=snapshot.id,
+        name=payload.name,
+        priority=payload.priority,
+        destination_base_path=payload.destination_base_path,
+    )
     for node in payload.selections:
         kind = SelectorKind.FOLDER_RECURSIVE if node.type == ItemType.FOLDER.value else SelectorKind.EXPLICIT_IDS
         BatchService(db).add_selector(batch.id, kind=kind, value=node.id, include=True)

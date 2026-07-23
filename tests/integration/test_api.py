@@ -9,6 +9,7 @@ from sqlalchemy.pool import StaticPool
 from document_engine.adapters.database.models import Base
 from document_engine.adapters.filesystem.temp_storage import TempFileStorage
 from document_engine.api.dependencies import (
+    get_ai_naming_provider,
     get_db,
     get_db_session_factory,
     get_destination_repository,
@@ -18,8 +19,9 @@ from document_engine.api.dependencies import (
 from document_engine.domain.entities import RepositoryItem
 from document_engine.domain.enums import ItemType
 from document_engine.main import app
+from document_engine.ports.ai_naming_provider import AINamingResponse
 from document_engine.settings import get_settings, Settings
-from tests.unit.fakes import FakeDestinationRepository, FakeSourceRepository
+from tests.unit.fakes import FakeAINamingProvider, FakeDestinationRepository, FakeSourceRepository
 
 
 def _small_tree() -> list[RepositoryItem]:
@@ -230,6 +232,68 @@ def test_create_batch_from_selection_wraps_in_destination_folder(tmp_path):
         app.dependency_overrides.clear()
 
 
+def test_create_batch_from_selection_with_existing_destination_base_path(tmp_path):
+    """Con destination_base_path informado, el lote queda anidado dentro de
+    ese directorio ya existente en el FTP, usado tal cual (sin normalizar,
+    a diferencia de destination_folder_name) porque ya existe en el
+    servidor con ese nombre exacto."""
+    engine = create_engine(
+        "sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+
+    def override_get_db():
+        db = session_factory()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    source = FakeSourceRepository(_nested_tree(), contents={"deep-file": b"hola!"})
+    destination = FakeDestinationRepository()
+    temp_storage = TempFileStorage(tmp_path)
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_db_session_factory] = lambda: session_factory
+    app.dependency_overrides[get_source_repository] = lambda: source
+    app.dependency_overrides[get_destination_repository] = lambda: destination
+    app.dependency_overrides[get_temp_storage] = lambda: temp_storage
+
+    try:
+        with TestClient(app) as test_client:
+            resp = test_client.post(
+                "/migration-batches/from-selection",
+                json={
+                    "name": "con directorio existente",
+                    "priority": 50,
+                    "destination_base_path": "Clientes/Empresa Ñu 2026",
+                    "selections": [
+                        {
+                            "id": "deep-file",
+                            "name": "archivo.txt",
+                            "type": "FILE",
+                            "ancestor_chain": [
+                                {"id": "root", "name": "ROOT"},
+                                {"id": "a", "name": "Carpeta A"},
+                                {"id": "b", "name": "Subcarpeta B"},
+                            ],
+                        }
+                    ],
+                },
+            )
+            assert resp.status_code == 200, resp.text
+            batch = resp.json()
+            assert batch["destination_base_path"] == "Clientes/Empresa Ñu 2026"
+
+            assert test_client.post(f"/migration-batches/{batch['id']}/plan").status_code == 200
+            preview = test_client.get(f"/migration-batches/{batch['id']}/preview").json()
+            item = next(i for i in preview["items"] if i["source_path"].endswith("archivo.txt"))
+            assert item["planned_destination_path"].startswith("Clientes/Empresa Ñu 2026/")
+    finally:
+        app.dependency_overrides.clear()
+
+
 @pytest.fixture
 def client(tmp_path):
     engine = create_engine(
@@ -274,6 +338,19 @@ def test_capabilities_exposes_no_secrets(client):
     body = response.json()
     assert "openai_api_key" not in body
     assert "ftp_password" not in body
+
+
+def test_ftp_browse_lists_existing_directories_only(client):
+    test_client, destination = client
+    destination.ensure_directory("Clientes/Empresa X")
+
+    root_resp = test_client.get("/ftp/browse")
+    assert root_resp.status_code == 200
+    assert {"name": "Clientes", "path": "Clientes"} in root_resp.json()
+
+    nested_resp = test_client.get("/ftp/browse", params={"path": "Clientes"})
+    assert nested_resp.status_code == 200
+    assert {"name": "Empresa X", "path": "Clientes/Empresa X"} in nested_resp.json()
 
 
 def test_full_flow_discovery_to_completed(client):
@@ -362,6 +439,120 @@ def test_run_batch_processes_everything_in_background(client):
     assert second_run.status_code == 200
     status_after = test_client.get(f"/migration-batches/{batch['id']}/status").json()
     assert status_after["counts_by_state"] == {"COMPLETED": 2}
+
+
+def test_rename_ai_batch_resolves_all_pending_in_background(tmp_path):
+    """`/rename-ai` reemplaza el bucle del cliente (un POST por elemento a
+    `regenerate-ai-name`, que perdía todo lo pendiente si se cerraba la
+    pestaña a mitad de camino) por un BackgroundTask del servidor: sigue
+    corriendo aunque el frontend se cierre. TestClient ejecuta las
+    background tasks de forma síncrona antes de devolver la respuesta."""
+    engine = create_engine(
+        "sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+
+    def override_get_db():
+        db = session_factory()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    now = datetime.now(timezone.utc)
+    long_name_tree = [
+        RepositoryItem(
+            source_item_id="root",
+            parent_id=None,
+            name="ROOT",
+            item_type=ItemType.FOLDER,
+            mime_type="application/vnd.google-apps.folder",
+            size=None,
+            created_time=now,
+            modified_time=now,
+            checksum=None,
+            trashed=False,
+            can_download=True,
+            logical_path="ROOT",
+        ),
+        RepositoryItem(
+            source_item_id="file-long",
+            parent_id="root",
+            name="Informe extremadamente detallado de gestion anual 2026.pdf",
+            item_type=ItemType.FILE,
+            mime_type="application/pdf",
+            size=5,
+            created_time=now,
+            modified_time=now,
+            checksum=None,
+            trashed=False,
+            can_download=True,
+            logical_path="ROOT/Informe extremadamente detallado de gestion anual 2026.pdf",
+        ),
+    ]
+    source = FakeSourceRepository(long_name_tree, contents={"file-long": b"hola!"})
+    destination = FakeDestinationRepository()
+    temp_storage = TempFileStorage(tmp_path)
+    fake_provider = FakeAINamingProvider(
+        [AINamingResponse(suggested_name="INFORME_GESTION_ANUAL", reason="ok", confidence=0.9, requires_review=False)]
+    )
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_db_session_factory] = lambda: session_factory
+    app.dependency_overrides[get_source_repository] = lambda: source
+    app.dependency_overrides[get_destination_repository] = lambda: destination
+    app.dependency_overrides[get_temp_storage] = lambda: temp_storage
+    app.dependency_overrides[get_ai_naming_provider] = lambda: fake_provider
+
+    try:
+        with TestClient(app) as test_client:
+            snapshot = test_client.post("/discovery-runs", json={"root_folder_id": "root"}).json()
+            batch = test_client.post(
+                "/migration-batches", json={"snapshot_id": snapshot["id"], "name": "ai-rename-bg", "priority": 100}
+            ).json()
+            test_client.post(
+                f"/migration-batches/{batch['id']}/selectors",
+                json={"kind": "FOLDER_RECURSIVE", "value": "root", "include": True},
+            )
+            test_client.post(f"/migration-batches/{batch['id']}/plan")
+
+            reviews_before = test_client.get(f"/migration-batches/{batch['id']}/name-reviews").json()
+            assert len(reviews_before) == 1
+            assert reviews_before[0]["rename_method"] == "AI_ASSISTED"
+
+            rename_resp = test_client.post(f"/migration-batches/{batch['id']}/rename-ai")
+            assert rename_resp.status_code == 200, rename_resp.text
+            assert rename_resp.json()["status"] == "started"
+
+            assert len(fake_provider.calls) == 1
+
+            status = test_client.get(f"/migration-batches/{batch['id']}/status").json()
+            assert status["ai_rename_running"] is False
+
+            reviews_after = test_client.get(f"/migration-batches/{batch['id']}/name-reviews").json()
+            assert len(reviews_after) == 0  # se resolvió sin necesitar revisión -> pasó a READY
+
+            preview = test_client.get(f"/migration-batches/{batch['id']}/preview").json()
+            item = next(i for i in preview["items"] if i["source_path"].endswith(".pdf"))
+            assert item["planned_destination_path"] == "ROOT/INFORME_GESTION_ANUAL.pdf"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_rename_ai_batch_without_provider_configured_returns_503(client):
+    test_client, _ = client
+    app.dependency_overrides[get_ai_naming_provider] = lambda: None
+    try:
+        snapshot = test_client.post("/discovery-runs", json={"root_folder_id": "root"}).json()
+        batch = test_client.post(
+            "/migration-batches", json={"snapshot_id": snapshot["id"], "name": "sin-ia", "priority": 100}
+        ).json()
+
+        response = test_client.post(f"/migration-batches/{batch['id']}/rename-ai")
+        assert response.status_code == 503
+    finally:
+        app.dependency_overrides.pop(get_ai_naming_provider, None)
 
 
 def test_retry_failed_endpoint_requires_existing_batch(client):

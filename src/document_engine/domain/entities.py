@@ -22,6 +22,7 @@ class RepositoryItem:
     trashed: bool
     can_download: bool
     logical_path: str
+    shortcut_target_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

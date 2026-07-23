@@ -1,17 +1,24 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from document_engine.adapters.database.models import MigrationItem as MigrationItemModel
-from document_engine.api.dependencies import get_db, get_ai_naming_provider, get_naming_engine, require_api_key
+from document_engine.api.dependencies import (
+    get_ai_naming_provider,
+    get_db,
+    get_db_session_factory,
+    get_naming_engine,
+    require_api_key,
+)
 from document_engine.api.schemas import (
     ApproveNameRequest,
     DestinationNameUpdate,
     MigrationItemOut,
     RegenerateAiNameRequest,
 )
+from document_engine.application.background_runner import is_rename_running, run_ai_rename_in_background
 from document_engine.application.naming_service import NamingAssistantService
 from document_engine.application.planning_service import NameReviewService
 from document_engine.domain.enums import MigrationItemState, RenameMethod
@@ -30,6 +37,35 @@ def list_name_reviews(batch_id: str, db: Session = Depends(get_db)):
         .where(MigrationItemModel.state == MigrationItemState.WAITING_REVIEW.value)
     )
     return db.execute(stmt).scalars().all()
+
+
+@router.post("/migration-batches/{batch_id}/rename-ai")
+def rename_ai_batch(
+    batch_id: str,
+    background_tasks: BackgroundTasks,
+    session_factory=Depends(get_db_session_factory),
+    naming_engine: NamingRulesEngine = Depends(get_naming_engine),
+    ai_provider: AINamingProviderPort | None = Depends(get_ai_naming_provider),
+) -> dict:
+    """Genera con IA todos los nombres pendientes de revisión del lote, en
+    segundo plano en el proceso del servidor: sigue corriendo aunque se
+    cierre la pestaña o el frontend entero (a diferencia de pedir un nombre
+    a la vez desde el cliente, que perdía todo lo pendiente si el navegador
+    se cerraba a mitad de camino)."""
+    if ai_provider is None:
+        raise HTTPException(503, "OPENAI_RENAME_ENABLED está apagado o falta OPENAI_API_KEY")
+    if is_rename_running(batch_id):
+        return {"batch_id": batch_id, "status": "already_running"}
+
+    background_tasks.add_task(
+        run_ai_rename_in_background,
+        batch_id,
+        session_factory=session_factory,
+        ai_provider=ai_provider,
+        naming_engine=naming_engine,
+        ai_model_name=get_settings().openai_rename_model,
+    )
+    return {"batch_id": batch_id, "status": "started"}
 
 
 @router.patch("/migration-items/{item_id}/destination-name", response_model=MigrationItemOut)

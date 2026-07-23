@@ -11,7 +11,10 @@ from document_engine.adapters.database.models import MigrationBatch as Migration
 from document_engine.adapters.database.models import MigrationItem as MigrationItemModel
 from document_engine.adapters.filesystem.temp_storage import TempFileStorage
 from document_engine.application.migration_service import Builder
+from document_engine.application.naming_service import NamingAssistantService
 from document_engine.domain.enums import MigrationItemState
+from document_engine.domain.naming_rules import NamingRulesEngine
+from document_engine.ports.ai_naming_provider import AINamingProviderPort
 from document_engine.ports.destination_repository import DestinationRepositoryPort
 from document_engine.ports.source_repository import SourceRepositoryPort
 from document_engine.worker.lease_manager import claim_next_item
@@ -19,6 +22,7 @@ from document_engine.worker.lease_manager import claim_next_item
 logger = logging.getLogger(__name__)
 
 _active_runs: set[str] = set()
+_active_rename_runs: set[str] = set()
 
 _TERMINAL_STATES = (
     MigrationItemState.COMPLETED.value,
@@ -31,6 +35,10 @@ _TERMINAL_STATES = (
 
 def is_running(batch_id: str) -> bool:
     return batch_id in _active_runs
+
+
+def is_rename_running(batch_id: str) -> bool:
+    return batch_id in _active_rename_runs
 
 
 def run_batch_in_background(
@@ -90,4 +98,48 @@ def run_batch_in_background(
             db.commit()
     finally:
         _active_runs.discard(batch_id)
+        db.close()
+
+
+def run_ai_rename_in_background(
+    batch_id: str,
+    *,
+    session_factory: Callable[[], Session],
+    ai_provider: AINamingProviderPort,
+    naming_engine: NamingRulesEngine,
+    ai_model_name: str,
+) -> None:
+    """Igual que `run_batch_in_background`, pero para el renombrado asistido
+    por IA: corre en el proceso del servidor y sobrevive a que se cierre la
+    pestaña o el frontend entero. Antes esto se hacía con un bucle en el
+    cliente (un POST por elemento) que perdía todo el progreso pendiente si
+    el navegador se cerraba a mitad de camino.
+
+    Toma una foto fija de los elementos pendientes al arrancar en vez de
+    volver a consultar en cada vuelta: un elemento que `resolve_item` deja
+    en WAITING_REVIEW (porque la IA necesita revisión humana) seguiría
+    apareciendo en una consulta en vivo, causando un bucle infinito que lo
+    reprocesa una y otra vez."""
+    if batch_id in _active_rename_runs:
+        return
+    _active_rename_runs.add(batch_id)
+    db = session_factory()
+    try:
+        pending_ids = (
+            db.execute(
+                select(MigrationItemModel.id)
+                .where(MigrationItemModel.batch_id == batch_id)
+                .where(MigrationItemModel.state == MigrationItemState.WAITING_REVIEW.value)
+            )
+            .scalars()
+            .all()
+        )
+        service = NamingAssistantService(db, ai_provider, naming_engine, ai_model_name=ai_model_name)
+        for item_id in pending_ids:
+            try:
+                service.resolve_item(item_id, force=True)
+            except Exception:  # noqa: BLE001 - no debe tumbar el hilo de fondo
+                logger.exception("Error generando nombre IA para %s en el lote %s", item_id, batch_id)
+    finally:
+        _active_rename_runs.discard(batch_id)
         db.close()

@@ -31,6 +31,11 @@ class DriveBrowseItemOut(BaseModel):
     size: int | None
 
 
+class FtpBrowseItemOut(BaseModel):
+    name: str
+    path: str
+
+
 class AncestorRef(BaseModel):
     id: str
     name: str
@@ -49,12 +54,21 @@ class BatchCreateFromSelection(BaseModel):
     name: str
     priority: int = Field(default=50, ge=0, le=100)
     selections: list[SelectionNode]
+    destination_base_path: str | None = Field(
+        default=None,
+        description=(
+            "Ruta ya existente en el FTP (elegida explorando el servidor) donde queda "
+            "todo lo migrado. Se usa tal cual, sin normalizar — es un directorio real "
+            "que ya está ahí. Si se omite, se migra desde la raíz configurada (FTP_ROOT_PATH)."
+        ),
+    )
     destination_folder_name: str | None = Field(
         default=None,
         description=(
-            "Si se indica, todo lo seleccionado queda dentro de esta carpeta en el FTP. "
-            "Si se omite, se migra directo a la raíz configurada (FTP_ROOT_PATH), "
-            "conservando los nombres de carpeta tal como están en Drive."
+            "Si se indica, se crea esta carpeta nueva dentro de `destination_base_path` "
+            "(o de la raíz, si no se indicó base) y todo lo seleccionado queda dentro. "
+            "Si se omite, se migra directo al destino elegido, conservando los nombres "
+            "de carpeta tal como están en Drive."
         ),
     )
 
@@ -75,6 +89,7 @@ class BatchCreate(BaseModel):
     snapshot_id: str
     name: str
     priority: int = Field(default=50, ge=0, le=100)
+    destination_base_path: str | None = None
 
 
 class BatchOut(BaseModel):
@@ -83,6 +98,7 @@ class BatchOut(BaseModel):
     name: str
     priority: int
     status: str
+    destination_base_path: str | None = None
 
     model_config = {"from_attributes": True}
 

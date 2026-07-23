@@ -202,7 +202,21 @@ class FTPRepository(DestinationRepositoryPort):
             entries = conn.nlst(full)
         except ftplib.error_perm:
             return []
-        return [PurePosixPath(e).name for e in entries]
+        names = [PurePosixPath(e).name for e in entries]
+        return [n for n in names if n not in (".", "..")]
+
+    def list_directories(self, path: str) -> list[str]:
+        """Un directorio no tiene tamaño (`SIZE` falla con 550); se
+        reutiliza esa misma señal que ya usa `exists()` para distinguir
+        subdirectorios de archivos, sin depender de `MLSD` (no todos los
+        servidores lo soportan)."""
+        base = path.strip("/")
+        directories = []
+        for name in self.list_dir(path):
+            child = f"{base}/{name}" if base else name
+            if self.get_size(child) is None:
+                directories.append(name)
+        return directories
 
     def download_to(self, remote_path: str, local_path: str) -> None:
         conn = self._ensure_connected()

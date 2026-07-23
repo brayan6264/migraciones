@@ -57,12 +57,20 @@ class BatchService:
     def __init__(self, db: Session):
         self._db = db
 
-    def create_batch(self, *, snapshot_id: str, name: str, priority: "Priority | int" = Priority.NORMAL) -> MigrationBatchModel:
+    def create_batch(
+        self,
+        *,
+        snapshot_id: str,
+        name: str,
+        priority: "Priority | int" = Priority.NORMAL,
+        destination_base_path: str | None = None,
+    ) -> MigrationBatchModel:
         batch = MigrationBatchModel(
             snapshot_id=snapshot_id,
             name=name,
             priority=normalize_priority(priority),
             status="DRAFT",
+            destination_base_path=(destination_base_path or "").strip("/") or None,
         )
         self._db.add(batch)
         self._db.commit()
@@ -116,7 +124,7 @@ class PlanningService:
         naming_engine: NamingRulesEngine,
         *,
         export_formats: dict[str, dict[str, str]] | None = None,
-        block_compressed: bool = True,
+        block_compressed: bool = False,
     ):
         self._db = db
         self._naming = naming_engine
@@ -260,6 +268,15 @@ class PlanningService:
 
         destination_path_by_source_id: dict[str, str] = {}
         used_names_by_parent: dict[str, dict[str, set[str]]] = {}
+
+        if batch.destination_base_path:
+            # Ruta ya existente en el FTP elegida por el usuario (sección de
+            # selección visual): se usa tal cual, sin pasar por el motor de
+            # normalización de nombres — a diferencia de las carpetas que sí
+            # vienen de Drive, esta ya existe en el servidor con ese nombre
+            # exacto, y normalizarla crearía una carpeta distinta en vez de
+            # escribir dentro de la elegida.
+            destination_path_by_source_id[""] = batch.destination_base_path
 
         for source_id in ordered_ids:
             item = items_by_id[source_id]

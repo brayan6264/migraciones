@@ -107,13 +107,26 @@ def test_collision_is_resolved_and_never_produces_duplicate_paths(snapshot_and_s
     assert preview["collisions_resolved"] >= 1
 
 
-def test_zip_file_is_blocked(snapshot_and_services):
+def test_zip_file_is_included_by_default(snapshot_and_services):
     db, snapshot, batches, planning = snapshot_and_services
     batch = batches.create_batch(snapshot_id=snapshot.id, name="ola-f", priority=Priority.NORMAL)
     batches.add_selector(batch.id, kind=SelectorKind.EXPLICIT_IDS, value="file-zip")
 
     planning.generate_plan(batch.id)
     preview = planning.preview(batch.id)
+
+    zip_item = next(i for i in preview["items"] if "Backup.zip" in i["source_path"])
+    assert zip_item["state"] != MigrationItemState.BLOCKED.value
+
+
+def test_zip_file_is_blocked_when_explicitly_configured(snapshot_and_services):
+    db, snapshot, batches, _ = snapshot_and_services
+    planning_blocking = PlanningService(db, NamingRulesEngine(ABBREVIATIONS), export_formats=EXPORT_FORMATS, block_compressed=True)
+    batch = batches.create_batch(snapshot_id=snapshot.id, name="ola-f2", priority=Priority.NORMAL)
+    batches.add_selector(batch.id, kind=SelectorKind.EXPLICIT_IDS, value="file-zip")
+
+    planning_blocking.generate_plan(batch.id)
+    preview = planning_blocking.preview(batch.id)
 
     zip_item = next(i for i in preview["items"] if "Backup.zip" in i["source_path"])
     assert zip_item["state"] == MigrationItemState.BLOCKED.value
@@ -179,10 +192,27 @@ def test_preview_counts_match_generated_items(snapshot_and_services):
     planning.generate_plan(batch.id)
     preview = planning.preview(batch.id)
 
-    assert preview["blocked_count"] == 1  # file-zip
+    assert preview["blocked_count"] == 0  # file-zip ya no se bloquea por defecto
     assert preview["needs_review_count"] == 1  # file-long
     assert preview["folders"] == 2  # root (implícita) + folder-a
     assert preview["files"] == 5
+
+
+def test_destination_base_path_is_used_verbatim_without_normalizing(snapshot_and_services):
+    db, snapshot, batches, planning = snapshot_and_services
+    batch = batches.create_batch(
+        snapshot_id=snapshot.id,
+        name="ola-base-path",
+        priority=Priority.NORMAL,
+        destination_base_path="Clientes/Empresa Ñu 2026",
+    )
+    batches.add_selector(batch.id, kind=SelectorKind.EXPLICIT_IDS, value="file-zip")
+
+    planning.generate_plan(batch.id)
+    preview = planning.preview(batch.id)
+
+    zip_item = next(i for i in preview["items"] if "Backup.zip" in i["source_path"])
+    assert zip_item["planned_destination_path"].startswith("Clientes/Empresa Ñu 2026/")
 
 
 def test_replanning_does_not_duplicate_items(snapshot_and_services):

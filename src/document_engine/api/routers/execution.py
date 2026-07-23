@@ -16,7 +16,7 @@ from document_engine.api.dependencies import (
     require_api_key,
 )
 from document_engine.api.schemas import BatchReportOut
-from document_engine.application.background_runner import is_running, run_batch_in_background
+from document_engine.application.background_runner import is_rename_running, is_running, run_batch_in_background
 from document_engine.application.migration_service import Builder
 from document_engine.application.recovery_service import RecoveryService
 from document_engine.application.validation_service import generate_batch_report
@@ -173,6 +173,7 @@ def batch_status(batch_id: str, db: Session = Depends(get_db)) -> dict:
         "status": batch.status,
         "counts_by_state": counts,
         "background_running": is_running(batch_id),
+        "ai_rename_running": is_rename_running(batch_id),
     }
 
 

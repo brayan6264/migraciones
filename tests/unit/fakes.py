@@ -124,6 +124,16 @@ class FakeDestinationRepository(DestinationRepositoryPort):
         prefix = self._norm(path)
         return [f.rsplit("/", 1)[-1] for f in self._files if f.startswith(prefix)]
 
+    def list_directories(self, path: str) -> list[str]:
+        prefix = self._norm(path)
+        children = set()
+        for d in self._dirs:
+            if d == prefix or not d.startswith(f"{prefix}/" if prefix else ""):
+                continue
+            rest = d[len(prefix) + 1 :] if prefix else d
+            children.add(rest.split("/", 1)[0])
+        return sorted(children)
+
     def download_to(self, remote_path: str, local_path: str) -> None:
         data = self._files.get(self._norm(remote_path), b"")
         with open(local_path, "wb") as handle:

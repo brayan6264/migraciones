@@ -4,8 +4,9 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from document_engine.api.dependencies import get_db, require_api_key
-from document_engine.api.schemas import ConnectivityTestOut
+from document_engine.api.dependencies import get_db, get_destination_repository, require_api_key
+from document_engine.api.schemas import ConnectivityTestOut, FtpBrowseItemOut
+from document_engine.ports.destination_repository import DestinationRepositoryPort
 from document_engine.settings import Settings, get_settings
 
 router = APIRouter(tags=["health"])
@@ -56,6 +57,22 @@ def test_google_drive(settings: Settings = Depends(get_settings)) -> Connectivit
         return ConnectivityTestOut(ok=True, detail="Conexión y credenciales válidas")
     except Exception as exc:  # noqa: BLE001 - se sanitiza antes de exponer
         return ConnectivityTestOut(ok=False, detail=f"{type(exc).__name__}: {exc}")
+
+
+@router.get("/ftp/browse", response_model=list[FtpBrowseItemOut], dependencies=[Depends(require_api_key)])
+def browse_ftp(
+    path: str = "",
+    destination: DestinationRepositoryPort = Depends(get_destination_repository),
+) -> list[FtpBrowseItemOut]:
+    """Explora subdirectorios ya existentes en el FTP, para que el usuario
+    pueda elegir un destino real del servidor (sección de selección visual)
+    en vez de escribir una ruta a mano. Solo lectura: no crea nada."""
+    base = path.strip("/")
+    names = destination.list_directories(base)
+    return [
+        FtpBrowseItemOut(name=name, path=f"{base}/{name}" if base else name)
+        for name in sorted(names)
+    ]
 
 
 @router.post("/connections/ftp/test", dependencies=[Depends(require_api_key)])
