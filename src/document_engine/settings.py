@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     google_api_key: str | None = None
     google_root_folder_id: str | None = None
     google_shared_drive_id: str | None = None
+    google_timeout_seconds: int = 120
 
     ftp_mode: str = "ftps"
     ftp_host: str | None = None

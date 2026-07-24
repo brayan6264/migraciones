@@ -106,6 +106,8 @@ class GoogleDriveRepository(SourceRepositoryPort):
                 )
             except HttpError as exc:
                 raise self._translate_error(exc) from exc
+            except OSError as exc:
+                raise TransientError(str(exc)) from exc
 
             for raw in response.get("files", []):
                 if raw.get("trashed"):
@@ -137,6 +139,12 @@ class GoogleDriveRepository(SourceRepositoryPort):
             )
         except HttpError as exc:
             raise self._translate_error(exc) from exc
+        except OSError as exc:
+            # Timeout o corte de red a mitad de la llamada (frecuente con
+            # archivos grandes): tratable como transitorio, para que el
+            # mecanismo de reintentos/lease lo recoja en vez de dejar el
+            # elemento colgado indefinidamente en estado intermedio.
+            raise TransientError(str(exc)) from exc
         return self._to_repository_item(raw, logical_path=raw["name"])
 
     def _resolve_shortcut(self, item: RepositoryItem, visited: set[str]) -> RepositoryItem | None:
@@ -216,6 +224,12 @@ class GoogleDriveRepository(SourceRepositoryPort):
             return buffer
         except HttpError as exc:
             raise self._translate_error(exc) from exc
+        except OSError as exc:
+            # Timeout o corte de red a mitad de la llamada (frecuente con
+            # archivos grandes): tratable como transitorio, para que el
+            # mecanismo de reintentos/lease lo recoja en vez de dejar el
+            # elemento colgado indefinidamente en estado intermedio.
+            raise TransientError(str(exc)) from exc
 
     def export(self, item: RepositoryItem, target_mime_type: str) -> io.BytesIO:
         try:
@@ -231,6 +245,12 @@ class GoogleDriveRepository(SourceRepositoryPort):
             return buffer
         except HttpError as exc:
             raise self._translate_error(exc) from exc
+        except OSError as exc:
+            # Timeout o corte de red a mitad de la llamada (frecuente con
+            # archivos grandes): tratable como transitorio, para que el
+            # mecanismo de reintentos/lease lo recoja en vez de dejar el
+            # elemento colgado indefinidamente en estado intermedio.
+            raise TransientError(str(exc)) from exc
 
     @staticmethod
     def _is_rate_limit_error(exc: HttpError) -> bool:

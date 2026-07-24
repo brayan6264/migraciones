@@ -73,10 +73,10 @@ def _build_drive_client(settings: Settings):
     if settings.google_auth_mode == "api_key":
         if not settings.google_api_key:
             raise HTTPException(status_code=503, detail="GOOGLE_API_KEY no configurado")
-        return build_drive_client_api_key(settings.google_api_key)
+        return build_drive_client_api_key(settings.google_api_key, timeout_seconds=settings.google_timeout_seconds)
     if not settings.google_service_account_file:
         raise HTTPException(status_code=503, detail="GOOGLE_SERVICE_ACCOUNT_FILE no configurado")
-    return build_drive_client(settings.google_service_account_file)
+    return build_drive_client(settings.google_service_account_file, timeout_seconds=settings.google_timeout_seconds)
 
 
 def get_destination_repository(settings: Settings = Depends(get_settings)) -> DestinationRepositoryPort:

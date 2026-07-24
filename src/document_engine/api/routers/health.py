@@ -48,9 +48,9 @@ def test_google_drive(settings: Settings = Depends(get_settings)) -> Connectivit
         from document_engine.adapters.google_drive.client import build_drive_client, build_drive_client_api_key
 
         client = (
-            build_drive_client_api_key(settings.google_api_key)
+            build_drive_client_api_key(settings.google_api_key, timeout_seconds=settings.google_timeout_seconds)
             if settings.google_auth_mode == "api_key"
-            else build_drive_client(settings.google_service_account_file)
+            else build_drive_client(settings.google_service_account_file, timeout_seconds=settings.google_timeout_seconds)
         )
         if settings.google_root_folder_id:
             client.files().get(fileId=settings.google_root_folder_id, fields="id,name").execute()
