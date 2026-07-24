@@ -10,7 +10,9 @@ from document_engine.adapters.database.models import MigrationItem as MigrationI
 from document_engine.api.dependencies import (
     get_db,
     get_db_session_factory,
+    get_destination_factory,
     get_destination_repository,
+    get_source_factory,
     get_source_repository,
     get_temp_storage,
     require_api_key,
@@ -25,6 +27,7 @@ from document_engine.domain.state_machine import transition
 from document_engine.ports.destination_repository import DestinationRepositoryPort
 from document_engine.ports.source_repository import SourceRepositoryPort
 from document_engine.adapters.filesystem.temp_storage import TempFileStorage
+from document_engine.settings import Settings, get_settings
 
 router = APIRouter(tags=["execution"], dependencies=[Depends(require_api_key)])
 
@@ -45,6 +48,7 @@ def start_batch(
     source: SourceRepositoryPort = Depends(get_source_repository),
     destination: DestinationRepositoryPort = Depends(get_destination_repository),
     temp_storage: TempFileStorage = Depends(get_temp_storage),
+    settings: Settings = Depends(get_settings),
 ) -> dict:
     """Procesa hasta `max_items` elementos de forma síncrona dentro de la
     misma petición HTTP. Para volúmenes grandes, usar
@@ -67,7 +71,14 @@ def start_batch(
 
     from document_engine.worker.lease_manager import claim_next_item
 
-    builder = Builder(db, source, destination, temp_storage)
+    builder = Builder(
+        db,
+        source,
+        destination,
+        temp_storage,
+        max_item_retries=settings.max_item_retries,
+        retry_base_seconds=settings.retry_base_seconds,
+    )
     processed = []
     for _ in range(max_items):
         item = claim_next_item(db, batch_id, worker_owner=worker_owner)
@@ -85,15 +96,17 @@ def run_batch(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     session_factory=Depends(get_db_session_factory),
-    source: SourceRepositoryPort = Depends(get_source_repository),
-    destination: DestinationRepositoryPort = Depends(get_destination_repository),
+    source_factory=Depends(get_source_factory),
+    destination_factory=Depends(get_destination_factory),
     temp_storage: TempFileStorage = Depends(get_temp_storage),
+    settings: Settings = Depends(get_settings),
 ) -> dict:
-    """Arranca el procesamiento completo del lote en segundo plano, en el
-    proceso del servidor: sigue corriendo aunque se cierre la pestaña del
-    navegador o el frontend entero (a diferencia de `/start`, que solo
-    procesa una tanda y depende de que el cliente vuelva a llamarlo).
-    Se detiene solo al terminar, o si se pausa/cancela el lote."""
+    """Arranca el procesamiento del lote en segundo plano, en el proceso del
+    servidor, con hasta `worker_concurrency` elementos en paralelo: sigue
+    corriendo aunque se cierre la pestaña del navegador o el frontend entero
+    (a diferencia de `/start`, que solo procesa una tanda síncrona y depende
+    de que el cliente vuelva a llamarlo). Se detiene solo al terminar, o si
+    se pausa/cancela el lote."""
     batch = _get_batch(db, batch_id)
 
     stmt = (
@@ -115,9 +128,12 @@ def run_batch(
         run_batch_in_background,
         batch_id,
         session_factory=session_factory,
-        source=source,
-        destination=destination,
+        source_factory=source_factory,
+        destination_factory=destination_factory,
         temp_storage=temp_storage,
+        max_item_retries=settings.max_item_retries,
+        retry_base_seconds=settings.retry_base_seconds,
+        worker_concurrency=settings.worker_concurrency,
     )
     return {"batch_id": batch_id, "status": "started"}
 

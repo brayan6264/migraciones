@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import create_engine
@@ -9,6 +10,7 @@ from document_engine.adapters.database.models import MigrationBatch as Migration
 from document_engine.adapters.database.models import MigrationItem as MigrationItemModel
 from document_engine.application.migration_service import Builder
 from document_engine.domain.enums import MigrationItemState, RenameMethod
+from document_engine.domain.errors import TransientError
 from tests.unit.fakes import FakeDestinationRepository, FakeSourceRepository
 
 
@@ -211,6 +213,43 @@ def test_existing_destination_is_never_silently_overwritten(builder_env, tmp_pat
     assert resolved.state == MigrationItemState.FAILED.value
     assert resolved.last_error_code == "NAME_COLLISION_UNRESOLVED"
     assert destination._files["ROOT/CARPETA_A/REPORTE.pdf"] == b"archivo preexistente ajeno"
+
+
+def test_transient_error_retries_with_backoff_then_fails(builder_env, tmp_path):
+    """Un error transitorio persistente (p. ej. el FTP rechazando conexiones
+    por límite de usuarios) no debe reintentarse para siempre: tras agotar
+    `max_item_retries`, el elemento debe llegar a FAILED en vez de quedar en
+    un bucle infinito de RETRY_PENDING sin ninguna señal visible. Cada
+    reintento fallido, además, debe dejar el elemento no reclamable hasta
+    pasado un backoff (creciente), no inmediatamente disponible de nuevo."""
+    db, batch, destination = builder_env
+    item = make_ready_item(db, batch.id)
+    source = FakeSourceRepository([], contents={"file-1": b"contenido"})
+
+    from document_engine.adapters.filesystem.temp_storage import TempFileStorage
+
+    class AlwaysTransientDestination(FakeDestinationRepository):
+        def ensure_directory(self, path):
+            raise TransientError("503 servicio no disponible")
+
+    bad_destination = AlwaysTransientDestination()
+    builder = Builder(
+        db, source, bad_destination, TempFileStorage(tmp_path), max_item_retries=3, retry_base_seconds=1
+    )
+
+    for expected_attempt in range(1, 3):
+        resolved = builder.process_item(item.id)
+        assert resolved.state == MigrationItemState.RETRY_PENDING.value
+        assert resolved.attempt_count == expected_attempt
+        assert resolved.lease_expires_at is not None
+        assert resolved.lease_expires_at > datetime.now(timezone.utc)
+        # Backoff creciente: el segundo intento espera más que el primero.
+        item.lease_expires_at = None  # el test se salta el tiempo de espera real
+
+    resolved = builder.process_item(item.id)
+    assert resolved.state == MigrationItemState.FAILED.value
+    assert resolved.attempt_count == 3
+    assert resolved.lease_expires_at is None
 
 
 def test_already_completed_item_is_noop(builder_env, tmp_path):

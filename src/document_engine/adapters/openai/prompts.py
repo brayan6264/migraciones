@@ -10,7 +10,11 @@ REGLAS:
 - Todo en MAYÚSCULAS.
 - Sin tildes ni caracteres especiales.
 - No inventes códigos OBTC, fechas, versiones o datos.
-- Si se proporciona un código OBTC, consérvalo al inicio.
+- Si se proporciona un código OBTC, consérvalo EXACTO al inicio: es
+  OBLIGATORIO. Los códigos de fase/numeración como F3E03, F2E2, F0E0 o un
+  ordinal inicial (1, 2, 10) NUNCA se abrevian, se traducen ni se omiten;
+  van tal cual al comienzo del nombre. Prioriza conservar ese código por
+  encima de cualquier palabra descriptiva si hay que recortar.
 - Si se proporciona una fecha, consérvala al final en AAAAMMDD.
 - Utiliza el árbol de carpetas para conservar el significado más útil.
 - Usa abreviaturas estandarizadas.

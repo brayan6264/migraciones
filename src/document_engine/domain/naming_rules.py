@@ -21,6 +21,30 @@ NAME_PATTERN = re.compile(r"^[A-Z0-9]+(?:_[A-Z0-9]+)*$")
 _INVALID_CHARS_PATTERN = re.compile(r"[^A-Z0-9]+")
 _MULTI_UNDERSCORE_PATTERN = re.compile(r"_+")
 
+# Código de fase / numeración OBLIGATORIO al inicio del nombre, que debe
+# conservarse SIEMPRE como prefijo aunque el resto se abrevie: p. ej.
+# "F3E03", "F2E2", "F0E0", o un ordinal de nivel "1", "2", "10". Sin esto,
+# cuando el nombre es largo y lo abrevia la IA, se perdía ese código (dos
+# carpetas del mismo árbol quedaban con nombres distintos e inconexos).
+_MANDATORY_PREFIX_PATTERN = re.compile(
+    r"^\s*(F\d+E\d+[A-Z0-9]*|\d+)(?=[\s.\-_)\]]|$)",
+    re.IGNORECASE,
+)
+
+
+def extract_mandatory_prefix(name: str) -> tuple[str | None, str]:
+    """Detecta un código de fase/numeración obligatorio al inicio del nombre
+    (F3E03, F2E2, 1, 2, …). Devuelve `(código_sanitizado, resto_del_nombre)`;
+    `(None, name)` si no hay ninguno. El código se conserva como prefijo por
+    todos los caminos (reglas, IA, validación y fallback), garantizando que
+    la misma carpeta reciba siempre el mismo prefijo estructural."""
+    match = _MANDATORY_PREFIX_PATTERN.match(name)
+    if not match:
+        return None, name
+    code = sanitize_token(match.group(1))
+    remainder = name[match.end() :]
+    return (code or None), remainder
+
 
 def strip_diacritics(text: str) -> str:
     """Paso 2-3: normalización Unicode NFKD y eliminación de diacríticos."""
@@ -131,12 +155,24 @@ def normalize_name(
     else:
         raw_base, extension = split_base_and_extension(original_name)
 
-    descriptive = sanitize_base(raw_base)
+    # Si el nombre trae un código de fase/numeración obligatorio al inicio
+    # (F3E03, F2E2, "1", …) y el llamador no dio un OBTC explícito, se
+    # conserva ese código como prefijo y se quita del texto descriptivo para
+    # no duplicarlo. Así el prefijo se preserva también por la vía de reglas.
+    effective_code = obtc_code
+    descriptive_source = raw_base
+    if obtc_code is None:
+        extracted_code, remainder = extract_mandatory_prefix(raw_base)
+        if extracted_code:
+            effective_code = extracted_code
+            descriptive_source = remainder
+
+    descriptive = sanitize_base(descriptive_source)
     descriptive = apply_abbreviations(descriptive, abbreviations)
 
     base = compose_base(
         descriptive=descriptive,
-        obtc_code=obtc_code,
+        obtc_code=effective_code,
         consecutive=consecutive,
         version=version,
         date=date,

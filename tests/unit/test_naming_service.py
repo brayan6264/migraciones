@@ -121,6 +121,66 @@ def test_invalid_twice_falls_back_deterministically(naming_engine):
     assert decision.requires_review is True
 
 
+def test_mandatory_phase_code_preserved_when_ai_drops_it(naming_engine):
+    """Si el nombre trae un código de fase obligatorio (F3E03…) y la IA lo
+    omite, la validación debe rechazar esa sugerencia; tras el reintento
+    fallido, el fallback determinista igual conserva el código al inicio.
+    Este es exactamente el caso que dejó dos carpetas del mismo árbol con
+    nombres distintos (F3E03_… vs GUIA_…)."""
+    db = make_session()
+    batch = make_batch(db)
+    item = make_waiting_item(
+        db,
+        batch.id,
+        source_name="F3E03. Guia Tecnica Jornada de Intercambio de Conocimientos",
+        source_path="ROOT/F3E03. Guia Tecnica Jornada de Intercambio de Conocimientos",
+        planned_destination_path="ROOT/F3E03_GUIA_TECNICA_JORNADA",
+    )
+    # convertir a carpeta (sin extensión)
+    item.item_type = "FOLDER"
+    item.extension = None
+    db.commit()
+
+    # La IA insiste en un nombre que NO conserva el código.
+    bad = AINamingResponse(suggested_name="GUIA_TEC_JORNADA_INTERCAM", reason="x", confidence=0.9, requires_review=False)
+    provider = FakeAINamingProvider([bad, bad])
+    service = NamingAssistantService(db, provider, naming_engine)
+
+    resolved = service.resolve_item(item.id, force=True)
+
+    # Se rechazó dos veces (no conserva F3E03) y cayó a fallback...
+    assert len(provider.calls) == 2
+    for call in provider.calls:
+        assert call.obtc_code == "F3E03"  # se le pasó el código a preservar
+    # ...pero el resultado final SÍ empieza con el código obligatorio.
+    assert resolved.planned_destination_name.startswith("F3E03")
+
+
+def test_mandatory_phase_code_preserved_when_ai_keeps_it(naming_engine):
+    db = make_session()
+    batch = make_batch(db)
+    item = make_waiting_item(
+        db,
+        batch.id,
+        source_name="F2E2. Informes y herramientas de diagnostico",
+        source_path="ROOT/F2E2. Informes y herramientas de diagnostico",
+        planned_destination_path="ROOT/F2E2_INFORMES",
+    )
+    item.item_type = "FOLDER"
+    item.extension = None
+    db.commit()
+
+    good = AINamingResponse(suggested_name="F2E2_INFORMES_HERRAM", reason="ok", confidence=0.9, requires_review=False)
+    provider = FakeAINamingProvider([good])
+    service = NamingAssistantService(db, provider, naming_engine)
+
+    resolved = service.resolve_item(item.id, force=True)
+
+    assert len(provider.calls) == 1
+    assert resolved.planned_destination_name == "F2E2_INFORMES_HERRAM"
+    assert resolved.state == MigrationItemState.READY.value
+
+
 def test_transient_provider_error_triggers_fallback(naming_engine):
     db = make_session()
     batch = make_batch(db)

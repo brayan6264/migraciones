@@ -6,6 +6,7 @@ from document_engine.domain.naming_rules import (
     MAX_BASE_LENGTH,
     NAME_PATTERN,
     NamingRulesEngine,
+    extract_mandatory_prefix,
     normalize_name,
     resolve_collision,
     sanitize_base,
@@ -77,6 +78,37 @@ def test_names_over_25_chars_need_ai(length):
 def test_obtc_code_preserved_at_start():
     result = normalize_name("Diagnostico anual.pdf", obtc_code="147")
     assert result.base.startswith("147_")
+
+
+@pytest.mark.parametrize(
+    "name,expected_code,expected_remainder",
+    [
+        ("F3E03. Guia Tecnica", "F3E03", ". Guia Tecnica"),
+        ("F2E2. Informes", "F2E2", ". Informes"),
+        ("F0E0. Comites", "F0E0", ". Comites"),
+        ("3. Impulsate", "3", ". Impulsate"),
+        ("10. Cierre", "10", ". Cierre"),
+        ("Sin codigo al inicio", None, "Sin codigo al inicio"),
+    ],
+)
+def test_extract_mandatory_prefix(name, expected_code, expected_remainder):
+    code, remainder = extract_mandatory_prefix(name)
+    assert code == expected_code
+    assert remainder == expected_remainder
+
+
+def test_phase_code_preserved_as_prefix_in_rules_path():
+    # Nombre largo: sin el código, se perdería al abreviar. Debe quedar al inicio.
+    result = normalize_name(
+        "F3E03. Guia Tecnica Jornada de Intercambio de Conocimientos", is_folder=True
+    )
+    assert result.base.startswith("F3E03_")
+    assert result.needs_ai is True  # supera 25 -> irá a la IA, que también debe conservarlo
+
+
+def test_leading_ordinal_preserved_and_not_duplicated():
+    result = normalize_name("3. Impulsate", is_folder=True)
+    assert result.base == "3_IMPULSATE"
 
 
 def test_date_kept_at_end():

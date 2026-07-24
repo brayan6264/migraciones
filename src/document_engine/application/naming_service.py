@@ -16,6 +16,7 @@ from document_engine.domain.naming_rules import (
     NAME_PATTERN,
     NamingRulesEngine,
     deterministic_fallback,
+    extract_mandatory_prefix,
     sanitize_token,
 )
 from document_engine.domain.state_machine import transition
@@ -191,6 +192,16 @@ class NamingAssistantService:
                 "regenerate-ai-name solo aplica a nombres que superan 25 caracteres, salvo orden explícita",
                 code="NAME_AI_NOT_APPLICABLE",
             )
+
+        # Si el nombre trae un código de fase/numeración obligatorio (F3E03,
+        # F2E2, "1", …) y no se dio un OBTC explícito, se toma como el código
+        # a conservar: así la IA lo mantiene (el prompt lo pide, la validación
+        # lo exige) y, si la IA falla, el fallback determinista también lo
+        # conserva porque queda al inicio del nombre normalizado.
+        if obtc_code is None:
+            extracted_code, _ = extract_mandatory_prefix(item.source_name)
+            if extracted_code:
+                obtc_code = extracted_code
 
         normalized = self._naming.normalize(
             item.source_name, obtc_code=obtc_code, date=date, is_folder=item.item_type == ItemType.FOLDER.value

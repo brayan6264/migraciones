@@ -137,6 +137,8 @@ class FTPRepository(DestinationRepositoryPort):
                 if "550" in str(exc):  # ya existe
                     continue
                 raise PermanentError(str(exc), code=FTP_WRITE_DENIED) from exc
+            except _TRANSIENT_FTP_ERRORS as exc:
+                raise TransientError(str(exc)) from exc
 
     def exists(self, path: str) -> bool:
         if self.get_size(path) is not None:
@@ -153,6 +155,8 @@ class FTPRepository(DestinationRepositoryPort):
             return conn.size(full)
         except ftplib.error_perm:
             return None
+        except _TRANSIENT_FTP_ERRORS as exc:
+            raise TransientError(str(exc)) from exc
 
     def upload(self, local_path: str, remote_path: str, *, resume_offset: int = 0) -> int:
         conn = self._ensure_connected()
@@ -184,6 +188,8 @@ class FTPRepository(DestinationRepositoryPort):
             conn.delete(self._full_path(path))
         except ftplib.error_perm:
             pass  # ya no existe: eliminar es idempotente
+        except _TRANSIENT_FTP_ERRORS as exc:
+            raise TransientError(str(exc)) from exc
 
     def supports_resume(self) -> bool:
         if self._resume_supported is None:
@@ -202,6 +208,8 @@ class FTPRepository(DestinationRepositoryPort):
             entries = conn.nlst(full)
         except ftplib.error_perm:
             return []
+        except _TRANSIENT_FTP_ERRORS as exc:
+            raise TransientError(str(exc)) from exc
         names = [PurePosixPath(e).name for e in entries]
         return [n for n in names if n not in (".", "..")]
 

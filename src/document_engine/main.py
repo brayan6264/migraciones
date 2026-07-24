@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import socket
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -7,6 +9,17 @@ from fastapi.responses import JSONResponse
 from document_engine.api.routers import batches, discovery, execution, health, items, name_review
 from document_engine.domain.errors import DocumentEngineError, InvalidStateTransition, PermanentError, TransientError
 from document_engine.settings import get_settings
+
+# Red de seguridad de último recurso contra descargas colgadas: se
+# comprobó en vivo (con `sys._current_frames()`) que el timeout explícito
+# configurado en el cliente de Drive (`httplib2.Http(timeout=...)`) no se
+# aplicaba a un socket SSL reusado — el hilo del worker en segundo plano
+# quedaba bloqueado para siempre en `ssl.py: self._sslobj.read(...)` sin
+# ningún error, dejando el lote "colgado" sin ninguna señal visible.
+# `setdefaulttimeout` actúa a nivel de la librería estándar: todo socket
+# nuevo que no reciba su propio timeout explícito hereda este por
+# construcción, sin depender de que cada librería lo configure bien.
+socket.setdefaulttimeout(180)
 
 
 def create_app() -> FastAPI:

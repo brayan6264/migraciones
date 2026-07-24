@@ -12,7 +12,9 @@ from document_engine.api.dependencies import (
     get_ai_naming_provider,
     get_db,
     get_db_session_factory,
+    get_destination_factory,
     get_destination_repository,
+    get_source_factory,
     get_source_repository,
     get_temp_storage,
 )
@@ -317,7 +319,17 @@ def client(tmp_path):
     app.dependency_overrides[get_db_session_factory] = lambda: session_factory
     app.dependency_overrides[get_source_repository] = lambda: source
     app.dependency_overrides[get_destination_repository] = lambda: destination
+    # Las fábricas (usadas por el pool paralelo de `/run`) devuelven el mismo
+    # fake compartido: los fakes son estado en memoria que representa el
+    # origen/destino, seguro de compartir entre los workers del test.
+    app.dependency_overrides[get_source_factory] = lambda: (lambda: source)
+    app.dependency_overrides[get_destination_factory] = lambda: (lambda: destination)
     app.dependency_overrides[get_temp_storage] = lambda: temp_storage
+    # La BD de prueba es SQLite `:memory:` con una sola conexión compartida
+    # (StaticPool), que no admite acceso concurrente real de varios hilos.
+    # Con 1 worker el pool paralelo se ejecuta serializado (mismo código,
+    # sin contención). La concurrencia real se valida contra una BD/archivo.
+    app.dependency_overrides[get_settings] = lambda: Settings(worker_concurrency=1)
 
     with TestClient(app) as test_client:
         yield test_client, destination

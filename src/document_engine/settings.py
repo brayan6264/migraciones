@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     google_shared_drive_id: str | None = None
     google_timeout_seconds: int = 120
 
+
     ftp_mode: str = "ftps"
     ftp_host: str | None = None
     ftp_port: int = 21
@@ -42,6 +43,11 @@ class Settings(BaseSettings):
     worker_lease_seconds: int = 120
     worker_heartbeat_seconds: int = 30
     validation_level: str = "BASIC"
+    # Cuántos elementos procesa en paralelo `POST .../run`. Conservador por
+    # defecto: cada worker abre su propia conexión al FTP y muchos servidores
+    # limitan el nº de conexiones simultáneas (el nuestro: 10). Subir con
+    # cuidado según lo que aguante el servidor de destino.
+    worker_concurrency: int = 3
 
     internal_api_key: str | None = None
 

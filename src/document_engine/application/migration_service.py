@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
@@ -53,11 +53,16 @@ class Builder:
         source: SourceRepositoryPort,
         destination: DestinationRepositoryPort,
         temp_storage: TempFileStorage,
+        *,
+        max_item_retries: int = 5,
+        retry_base_seconds: int = 2,
     ):
         self._db = db
         self._source = source
         self._destination = destination
         self._temp_storage = temp_storage
+        self._max_item_retries = max_item_retries
+        self._retry_base_seconds = retry_base_seconds
 
     def process_item(self, migration_item_id: str) -> MigrationItemModel:
         item = self._db.get(MigrationItemModel, migration_item_id)
@@ -122,9 +127,25 @@ class Builder:
         item.last_error_code = getattr(exc, "code", None)
         item.last_error_message = str(exc)
         item.attempt_count += 1
+
+        # Un error transitorio (p. ej. límite de conexiones del FTP) no debe
+        # reintentarse para siempre: sin este límite, un problema externo
+        # persistente mantiene el elemento en un bucle infinito de reintentos
+        # inmediatos, sin nunca llegar a FAILED, y sin dar ninguna señal
+        # visible de que algo requiere atención (sección 9.1/9.4).
+        if terminal_state == MigrationItemState.RETRY_PENDING and item.attempt_count >= self._max_item_retries:
+            terminal_state = MigrationItemState.FAILED
+
         item.state = transition(MigrationItemState(item.state), terminal_state).value
         item.lease_owner = None
-        item.lease_expires_at = None
+        if terminal_state == MigrationItemState.RETRY_PENDING:
+            # Backoff exponencial: reutiliza el propio campo de lease como
+            # "no reclamable hasta" — evita martillar un servicio externo ya
+            # con problemas con reintentos inmediatos consecutivos.
+            backoff_seconds = min(self._retry_base_seconds * (2**item.attempt_count), 900)
+            item.lease_expires_at = datetime.now(timezone.utc) + timedelta(seconds=backoff_seconds)
+        else:
+            item.lease_expires_at = None
         self._journal(item, event_type="ITEM_FAILED", operation="TRANSFER", result="ERROR", error_code=item.last_error_code)
         self._db.commit()
 
@@ -178,14 +199,20 @@ class Builder:
         existing_size = self._temp_storage.current_size(item.id)
 
         if (
-            existing_size
-            and item.downloaded_bytes
-            and existing_size == item.downloaded_bytes
+            not is_export
+            and existing_size
             and item.source_size
             and existing_size == item.source_size
         ):
             # El temporal local ya está completo (p.ej. tras una caída antes
             # de la carga): se reutiliza sin volver a descargar (sección 9.2).
+            # Basta con que el tamaño en disco coincida con el tamaño de
+            # origen; NO se exige que `downloaded_bytes` esté persistido,
+            # porque una descarga puede haber terminado en disco pero el
+            # proceso morir antes de registrar ese contador — sin esto, un
+            # archivo grande (varios GB) ya descargado se volvería a bajar
+            # entero en vano. La validación por tamaño posterior protege
+            # igual contra un temporal corrupto.
             local_path = self._temp_storage.stable_path(item.id)
             total_bytes = existing_size
             sha256 = item.local_sha256 or self._temp_storage.compute_sha256(item.id)

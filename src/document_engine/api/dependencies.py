@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from functools import lru_cache
 
 from fastapi import Depends, Header, HTTPException, status
@@ -58,13 +58,29 @@ def get_temp_storage(settings: Settings = Depends(get_settings)) -> TempFileStor
     return TempFileStorage(settings.temp_dir)
 
 
-def get_source_repository(settings: Settings = Depends(get_settings)) -> SourceRepositoryPort:
-    """Construye el adaptador real de Google Drive a partir de `Settings`.
-    En pruebas se sobreescribe con `app.dependency_overrides`."""
+def build_source_repository(settings: Settings) -> SourceRepositoryPort:
+    """Construye un adaptador real de Google Drive nuevo (con su propia
+    conexión). Cada worker en paralelo necesita el suyo: el pool de
+    conexiones de httplib2 no es seguro para compartir entre hilos."""
     from document_engine.adapters.google_drive.drive_repository import GoogleDriveRepository
 
     client = _build_drive_client(settings)
     return GoogleDriveRepository(client, shared_drive_id=settings.google_shared_drive_id)
+
+
+def get_source_repository(settings: Settings = Depends(get_settings)) -> SourceRepositoryPort:
+    """Una instancia por request (browse/discovery). En pruebas se
+    sobreescribe con `app.dependency_overrides`."""
+    return build_source_repository(settings)
+
+
+def get_source_factory(
+    settings: Settings = Depends(get_settings),
+) -> Callable[[], SourceRepositoryPort]:
+    """Fábrica que crea repos de Drive frescos bajo demanda — para que cada
+    worker en paralelo tenga su propia conexión. En pruebas se sobreescribe
+    devolviendo un fake compartido."""
+    return lambda: build_source_repository(settings)
 
 
 def _build_drive_client(settings: Settings):
@@ -79,9 +95,10 @@ def _build_drive_client(settings: Settings):
     return build_drive_client(settings.google_service_account_file, timeout_seconds=settings.google_timeout_seconds)
 
 
-def get_destination_repository(settings: Settings = Depends(get_settings)) -> DestinationRepositoryPort:
-    """Construye el adaptador real de FTP/FTPS a partir de `Settings`.
-    En pruebas se sobreescribe con `app.dependency_overrides`."""
+def build_destination_repository(settings: Settings) -> DestinationRepositoryPort:
+    """Construye un adaptador FTP/FTPS nuevo (con su propia conexión de
+    control). Cada worker en paralelo necesita el suyo: una conexión ftplib
+    es stateful y NO es segura para compartir entre hilos."""
     from document_engine.adapters.ftp.ftp_repository import FTPRepository
 
     if not settings.ftp_host:
@@ -98,6 +115,20 @@ def get_destination_repository(settings: Settings = Depends(get_settings)) -> De
         root_path=settings.ftp_root_path,
         chunk_size_bytes=settings.transfer_chunk_size_mb * 1024 * 1024,
     )
+
+
+def get_destination_repository(settings: Settings = Depends(get_settings)) -> DestinationRepositoryPort:
+    """Una instancia por request (ftp browse/test). En pruebas se
+    sobreescribe con `app.dependency_overrides`."""
+    return build_destination_repository(settings)
+
+
+def get_destination_factory(
+    settings: Settings = Depends(get_settings),
+) -> Callable[[], DestinationRepositoryPort]:
+    """Fábrica que crea conexiones FTP frescas bajo demanda — una por worker
+    en paralelo. En pruebas se sobreescribe devolviendo un fake compartido."""
+    return lambda: build_destination_repository(settings)
 
 
 def get_ai_naming_provider(settings: Settings = Depends(get_settings)) -> AINamingProviderPort | None:

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import io
 import json
+import tempfile
 from collections.abc import Iterator
 from datetime import datetime
+from typing import IO
 
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
@@ -50,6 +52,29 @@ class GoogleDriveRepository(SourceRepositoryPort):
         self._client = client
         self._shared_drive_id = shared_drive_id
         self._page_size = page_size
+
+    def _reset_connection(self) -> None:
+        """Cierra el pool de conexiones TCP cacheadas por httplib2 para
+        forzar una conexión nueva en la próxima llamada.
+
+        httplib2 reutiliza conexiones entre requests, pero si el servidor
+        (o un proxy/NAT/antivirus intermedio) cerró silenciosamente su
+        extremo, al reusar esa conexión medio-muerta el `read` de la
+        respuesta se bloquea PARA SIEMPRE — se comprobó en vivo que ni el
+        timeout de httplib2 ni `socket.setdefaulttimeout()` lo cortan.
+        Empezar cada descarga con una conexión fresca elimina ese cuelgue
+        de raíz. No re-pide token OAuth: solo recicla los sockets TCP."""
+        http = getattr(self._client, "_http", None)
+        inner = getattr(http, "http", http)  # AuthorizedHttp envuelve el httplib2.Http real
+        connections = getattr(inner, "connections", None)
+        if not connections:
+            return
+        for conn in list(connections.values()):
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001 - cerrar nunca debe romper el flujo
+                pass
+        connections.clear()
 
     def _list_kwargs(self) -> dict:
         # Siempre True: una carpeta con `folder_id` conocido (p. ej. el
@@ -208,14 +233,18 @@ class GoogleDriveRepository(SourceRepositoryPort):
                 if item.item_type == ItemType.FOLDER:
                     stack.append((item.source_item_id, item.logical_path))
 
-    def open_download_stream(self, item: RepositoryItem, *, offset: int = 0) -> io.BytesIO:
+    def open_download_stream(self, item: RepositoryItem, *, offset: int = 0) -> IO[bytes]:
         if not item.can_download:
             raise PermanentError(
                 f"Sin permiso de descarga para {item.source_item_id}", code=DRIVE_PERMISSION_DENIED
             )
+        self._reset_connection()
         try:
             request = self._client.files().get_media(fileId=item.source_item_id, supportsAllDrives=True)
-            buffer = io.BytesIO()
+            # Buffer respaldado en disco, no en RAM: un archivo grande (p. ej.
+            # un video de varios GB) reventaría la memoria si se descargara
+            # entero a un `BytesIO`. Se borra solo al cerrarse.
+            buffer = tempfile.TemporaryFile()
             downloader = MediaIoBaseDownload(buffer, request, chunksize=8 * 1024 * 1024)
             done = False
             while not done:
@@ -231,12 +260,13 @@ class GoogleDriveRepository(SourceRepositoryPort):
             # elemento colgado indefinidamente en estado intermedio.
             raise TransientError(str(exc)) from exc
 
-    def export(self, item: RepositoryItem, target_mime_type: str) -> io.BytesIO:
+    def export(self, item: RepositoryItem, target_mime_type: str) -> IO[bytes]:
+        self._reset_connection()
         try:
             request = self._client.files().export_media(
                 fileId=item.source_item_id, mimeType=target_mime_type
             )
-            buffer = io.BytesIO()
+            buffer = tempfile.TemporaryFile()
             downloader = MediaIoBaseDownload(buffer, request)
             done = False
             while not done:
