@@ -134,6 +134,7 @@ def run_batch(
         max_item_retries=settings.max_item_retries,
         retry_base_seconds=settings.retry_base_seconds,
         worker_concurrency=settings.worker_concurrency,
+        item_timeout_seconds=settings.worker_item_timeout_seconds,
     )
     return {"batch_id": batch_id, "status": "started"}
 

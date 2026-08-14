@@ -27,6 +27,9 @@ ALLOWED_TRANSITIONS: dict[S, set[S]] = {
         S.VALIDATING,
         S.FAILED,
         S.CANCELLED,
+        # Un reintento puede descubrir que el destino ya existe (modo
+        # sincronización) y omitir el elemento en vez de reprocesarlo.
+        S.SKIPPED,
     },
     S.FAILED: {S.RETRY_PENDING, S.BLOCKED, S.CANCELLED},
     S.BLOCKED: {S.WAITING_REVIEW, S.CANCELLED},

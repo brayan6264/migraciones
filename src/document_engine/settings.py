@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     # limitan el nº de conexiones simultáneas (el nuestro: 10). Subir con
     # cuidado según lo que aguante el servidor de destino.
     worker_concurrency: int = 3
+    # Límite de tiempo por elemento (backstop para cuelgues irrecuperables).
+    # Generoso a propósito: un archivo de decenas de GB tarda horas en
+    # descargar+subir por un enlace lento y NO debe abandonarse por eso. Solo
+    # se dispara ante un bloqueo real. 4 horas por defecto.
+    worker_item_timeout_seconds: int = 14400
 
     internal_api_key: str | None = None
 

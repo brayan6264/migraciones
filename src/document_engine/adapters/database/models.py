@@ -73,6 +73,11 @@ class MigrationBatch(Base):
     priority: Mapped[int] = mapped_column(Integer, default=50)
     status: Mapped[str] = mapped_column(String(20), default="DRAFT")
     destination_base_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Modo sincronización: al migrar, un archivo cuyo destino ya existe con el
+    # mismo tamaño se marca SKIPPED sin volver a descargarlo/subirlo. Permite
+    # re-migrar un árbol (p. ej. un Drive gemelo con archivos nuevos) copiando
+    # solo lo que falta, sin re-transferir lo ya presente.
+    skip_existing: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 

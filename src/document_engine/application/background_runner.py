@@ -41,8 +41,10 @@ _TERMINAL_STATES = (
 # reuso de conexiones TCP medio-muertas, ya resuelto en
 # `GoogleDriveRepository._reset_connection`; con eso, este backstop casi
 # nunca debería dispararse. Un valor amplio evita, además, matar por error
-# una descarga/subida legítima pero lenta de un archivo de varios GB.
-_ITEM_HARD_TIMEOUT_SECONDS = 1800
+# una descarga/subida legítima pero lenta de un archivo de decenas de GB.
+# Configurable vía `WORKER_ITEM_TIMEOUT_SECONDS`; este es solo el default
+# si no se pasa explícitamente.
+_DEFAULT_ITEM_HARD_TIMEOUT_SECONDS = 14400
 
 
 def is_running(batch_id: str) -> bool:
@@ -63,6 +65,7 @@ def _process_item_with_hard_timeout(
     temp_storage: TempFileStorage,
     max_item_retries: int,
     retry_base_seconds: int,
+    item_timeout_seconds: int,
 ) -> None:
     """Procesa UN elemento en su propio sub-hilo con conexiones frescas
     (Drive + FTP + sesión de BD propias) y le impone un límite de tiempo
@@ -93,13 +96,13 @@ def _process_item_with_hard_timeout(
 
     thread = threading.Thread(target=_process, daemon=True)
     thread.start()
-    thread.join(timeout=_ITEM_HARD_TIMEOUT_SECONDS)
+    thread.join(timeout=item_timeout_seconds)
     if thread.is_alive():
         logger.error(
             "Elemento %s superó el timeout duro de %ss sin responder; se abandona ese hilo "
             "(sigue vivo en segundo plano) y el worker continúa con el resto",
             item_id,
-            _ITEM_HARD_TIMEOUT_SECONDS,
+            item_timeout_seconds,
         )
         # El hilo huérfano conserva sus propias conexiones/sesión; no las
         # cerramos aquí para no cortárselas si sigue vivo. Su lease vence solo.
@@ -130,6 +133,7 @@ def run_batch_in_background(
     max_item_retries: int = 5,
     retry_base_seconds: int = 2,
     worker_concurrency: int = 3,
+    item_timeout_seconds: int = _DEFAULT_ITEM_HARD_TIMEOUT_SECONDS,
 ) -> None:
     """Corre como `BackgroundTask` de FastAPI: procesa el lote con hasta
     `worker_concurrency` elementos en paralelo, sin depender de que el
@@ -169,7 +173,7 @@ def run_batch_in_background(
                         claim_db,
                         batch_id,
                         worker_owner=worker_owner,
-                        lease_seconds=_ITEM_HARD_TIMEOUT_SECONDS,
+                        lease_seconds=item_timeout_seconds,
                     )
                 if item is None:
                     break
@@ -182,6 +186,7 @@ def run_batch_in_background(
                     temp_storage=temp_storage,
                     max_item_retries=max_item_retries,
                     retry_base_seconds=retry_base_seconds,
+                    item_timeout_seconds=item_timeout_seconds,
                 )
         except Exception:  # noqa: BLE001 - un worker no debe tumbar a los demás
             logger.exception("Worker %s del lote %s terminó con error", index, batch_id)

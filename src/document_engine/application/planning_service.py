@@ -64,6 +64,7 @@ class BatchService:
         name: str,
         priority: "Priority | int" = Priority.NORMAL,
         destination_base_path: str | None = None,
+        skip_existing: bool = False,
     ) -> MigrationBatchModel:
         batch = MigrationBatchModel(
             snapshot_id=snapshot_id,
@@ -71,6 +72,7 @@ class BatchService:
             priority=normalize_priority(priority),
             status="DRAFT",
             destination_base_path=(destination_base_path or "").strip("/") or None,
+            skip_existing=skip_existing,
         )
         self._db.add(batch)
         self._db.commit()

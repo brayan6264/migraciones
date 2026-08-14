@@ -71,6 +71,14 @@ class BatchCreateFromSelection(BaseModel):
             "de carpeta tal como están en Drive."
         ),
     )
+    skip_existing: bool = Field(
+        default=False,
+        description=(
+            "Modo sincronización: los archivos cuyo destino ya existe con el mismo "
+            "tamaño se omiten (no se re-descargan ni re-suben). Útil para migrar solo "
+            "los archivos nuevos de un árbol ya migrado, apuntando al mismo destino."
+        ),
+    )
 
 
 class RepositoryItemOut(BaseModel):
@@ -90,6 +98,7 @@ class BatchCreate(BaseModel):
     name: str
     priority: int = Field(default=50, ge=0, le=100)
     destination_base_path: str | None = None
+    skip_existing: bool = False
 
 
 class BatchOut(BaseModel):
@@ -99,6 +108,7 @@ class BatchOut(BaseModel):
     priority: int
     status: str
     destination_base_path: str | None = None
+    skip_existing: bool = False
 
     model_config = {"from_attributes": True}
 

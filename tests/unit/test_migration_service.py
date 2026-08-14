@@ -20,8 +20,10 @@ def make_session():
     return sessionmaker(bind=engine, expire_on_commit=False)()
 
 
-def make_batch(db) -> MigrationBatchModel:
-    batch = MigrationBatchModel(snapshot_id="snap-1", name="ola", priority=50, status="RUNNING")
+def make_batch(db, *, skip_existing: bool = False) -> MigrationBatchModel:
+    batch = MigrationBatchModel(
+        snapshot_id="snap-1", name="ola", priority=50, status="RUNNING", skip_existing=skip_existing
+    )
     db.add(batch)
     db.commit()
     return batch
@@ -250,6 +252,85 @@ def test_transient_error_retries_with_backoff_then_fails(builder_env, tmp_path):
     assert resolved.state == MigrationItemState.FAILED.value
     assert resolved.attempt_count == 3
     assert resolved.lease_expires_at is None
+
+
+def test_skip_existing_skips_file_already_present_with_same_size(tmp_path):
+    """Modo sincronización: un archivo cuyo destino ya existe con el mismo
+    tamaño se marca SKIPPED SIN descargar ni subir nada (así re-migrar un
+    árbol solo transfiere lo nuevo)."""
+    db = make_session()
+    batch = make_batch(db, skip_existing=True)
+    item = make_ready_item(db, batch.id, source_size=len(b"contenido"))
+    destination = FakeDestinationRepository()
+    # el archivo final YA está en el destino, con el mismo tamaño
+    destination.ensure_directory("ROOT/CARPETA_A")
+    destination._files["ROOT/CARPETA_A/REPORTE.pdf"] = b"contenido"
+    source = FakeSourceRepository([], contents={"file-1": b"contenido"})
+
+    from document_engine.adapters.filesystem.temp_storage import TempFileStorage
+
+    builder = Builder(db, source, destination, TempFileStorage(tmp_path))
+    resolved = builder.process_item(item.id)
+
+    assert resolved.state == MigrationItemState.SKIPPED.value
+    assert destination.upload_calls == []  # no se subió nada
+    assert destination.rename_calls == []
+
+
+def test_skip_existing_migrates_file_not_yet_present(tmp_path):
+    db = make_session()
+    batch = make_batch(db, skip_existing=True)
+    item = make_ready_item(db, batch.id, source_size=len(b"contenido"))
+    destination = FakeDestinationRepository()  # destino vacío
+    source = FakeSourceRepository([], contents={"file-1": b"contenido"})
+
+    from document_engine.adapters.filesystem.temp_storage import TempFileStorage
+
+    builder = Builder(db, source, destination, TempFileStorage(tmp_path))
+    resolved = builder.process_item(item.id)
+
+    assert resolved.state == MigrationItemState.COMPLETED.value
+    assert destination.exists("ROOT/CARPETA_A/REPORTE.pdf")
+
+
+def test_skip_existing_does_not_skip_when_size_differs(tmp_path):
+    """Si el destino existe pero con OTRO tamaño (archivo distinto), NO se
+    omite: se deja fallar por colisión para avisar, en vez de ignorarlo."""
+    db = make_session()
+    batch = make_batch(db, skip_existing=True)
+    item = make_ready_item(db, batch.id, source_size=len(b"contenido nuevo"))
+    destination = FakeDestinationRepository()
+    destination.ensure_directory("ROOT/CARPETA_A")
+    destination._files["ROOT/CARPETA_A/REPORTE.pdf"] = b"otro archivo distinto"  # tamaño distinto
+    source = FakeSourceRepository([], contents={"file-1": b"contenido nuevo"})
+
+    from document_engine.adapters.filesystem.temp_storage import TempFileStorage
+
+    builder = Builder(db, source, destination, TempFileStorage(tmp_path))
+    resolved = builder.process_item(item.id)
+
+    assert resolved.state == MigrationItemState.FAILED.value
+    assert resolved.last_error_code == "NAME_COLLISION_UNRESOLVED"
+
+
+def test_without_skip_existing_collision_still_fails(tmp_path):
+    """Sin modo sincronización (default), un destino ya existente sigue
+    fallando por colisión — la garantía de no sobrescribir no cambia."""
+    db = make_session()
+    batch = make_batch(db)  # skip_existing=False
+    item = make_ready_item(db, batch.id, source_size=len(b"contenido"))
+    destination = FakeDestinationRepository()
+    destination.ensure_directory("ROOT/CARPETA_A")
+    destination._files["ROOT/CARPETA_A/REPORTE.pdf"] = b"contenido"
+    source = FakeSourceRepository([], contents={"file-1": b"contenido"})
+
+    from document_engine.adapters.filesystem.temp_storage import TempFileStorage
+
+    builder = Builder(db, source, destination, TempFileStorage(tmp_path))
+    resolved = builder.process_item(item.id)
+
+    assert resolved.state == MigrationItemState.FAILED.value
+    assert resolved.last_error_code == "NAME_COLLISION_UNRESOLVED"
 
 
 def test_already_completed_item_is_noop(builder_env, tmp_path):

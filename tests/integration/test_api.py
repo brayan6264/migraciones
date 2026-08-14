@@ -552,6 +552,34 @@ def test_rename_ai_batch_resolves_all_pending_in_background(tmp_path):
         app.dependency_overrides.clear()
 
 
+def test_skip_existing_sync_mode_skips_already_present_file(client):
+    """Extremo a extremo: un lote creado con `skip_existing=True` omite (no
+    re-migra) un archivo que ya está en el destino con el mismo tamaño."""
+    test_client, destination = client
+
+    # El archivo ya está en el destino con el tamaño esperado (5 bytes).
+    destination.ensure_directory("ROOT")
+    destination._files["ROOT/INF_CORTO.pdf"] = b"hola!"
+
+    snapshot = test_client.post("/discovery-runs", json={"root_folder_id": "root"}).json()
+    batch = test_client.post(
+        "/migration-batches",
+        json={"snapshot_id": snapshot["id"], "name": "sync", "priority": 100, "skip_existing": True},
+    ).json()
+    assert batch["skip_existing"] is True
+
+    test_client.post(
+        f"/migration-batches/{batch['id']}/selectors",
+        json={"kind": "FOLDER_RECURSIVE", "value": "root", "include": True},
+    )
+    test_client.post(f"/migration-batches/{batch['id']}/plan")
+    test_client.post(f"/migration-batches/{batch['id']}/run")
+
+    status = test_client.get(f"/migration-batches/{batch['id']}/status").json()
+    assert status["counts_by_state"].get("SKIPPED") == 1  # el archivo ya presente
+    assert destination.upload_calls == []  # no se re-subió nada
+
+
 def test_rename_ai_batch_without_provider_configured_returns_503(client):
     test_client, _ = client
     app.dependency_overrides[get_ai_naming_provider] = lambda: None

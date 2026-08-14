@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 
 from document_engine.adapters.database.models import JournalEvent
+from document_engine.adapters.database.models import MigrationBatch as MigrationBatchModel
 from document_engine.adapters.database.models import MigrationItem as MigrationItemModel
 from document_engine.adapters.filesystem.temp_storage import TempFileStorage
 from document_engine.domain.entities import RepositoryItem
@@ -80,6 +81,15 @@ class Builder:
 
         is_folder = item.item_type == ItemType.FOLDER.value
         try:
+            # Modo sincronización: si el archivo ya está en el destino con el
+            # mismo tamaño, se omite ANTES de descargar nada — así re-migrar un
+            # árbol solo transfiere lo nuevo, sin re-bajar los gigas ya
+            # presentes. Solo aplica a archivos (una carpeta que ya existe se
+            # crea de forma idempotente sin costo).
+            if not is_folder and self._should_skip_existing(item):
+                self._skip_already_present(item)
+                return item
+
             self._create_directories(item)
             if is_folder:
                 self._complete_folder(item)
@@ -100,6 +110,39 @@ class Builder:
         item.lease_expires_at = None
         self._db.commit()
         return item
+
+    # ---- modo sincronización ---------------------------------------------
+
+    def _should_skip_existing(self, item: MigrationItemModel) -> bool:
+        """True si el lote está en modo sincronización y el archivo ya está en
+        el destino con el MISMO tamaño (mismo archivo → nada que hacer).
+
+        Si existe con tamaño DISTINTO no se omite: se deja seguir el flujo
+        normal, que fallará por colisión y así avisa que hay un archivo
+        diferente con ese nombre en lugar de ignorarlo en silencio."""
+        batch = self._db.get(MigrationBatchModel, item.batch_id)
+        if batch is None or not batch.skip_existing:
+            return False
+        final_path = item.planned_destination_path
+        if not final_path:
+            return False
+        remote_size = self._destination.get_size(final_path)
+        if remote_size is None:
+            return False  # no existe: migrar normal
+        return remote_size == item.source_size
+
+    def _skip_already_present(self, item: MigrationItemModel) -> None:
+        item.state = transition(MigrationItemState(item.state), MigrationItemState.SKIPPED).value
+        item.remote_size = self._destination.get_size(item.planned_destination_path or "")
+        item.lease_owner = None
+        item.lease_expires_at = None
+        self._journal(
+            item,
+            event_type="ITEM_SKIPPED",
+            operation="SKIP_EXISTING",
+            result="OK",
+        )
+        self._db.commit()
 
     # ---- pasos -----------------------------------------------------------
 

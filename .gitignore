@@ -25,10 +25,19 @@ secrets/
 *.pem
 *.key
 
-# Base de datos local de desarrollo
+# Base de datos local de desarrollo.
+# Los archivos auxiliares de SQLite (-wal / -shm / -journal) DEBEN ignorarse
+# igual que el .db: `*.db` no los cubre porque su nombre no termina en ".db".
+# Si se versionan, un `git pull` mezcla el WAL de una máquina con el .db de
+# otra y SQLite falla con "database disk image is malformed".
 *.db
+*.db-wal
+*.db-shm
+*.db-journal
 *.sqlite
 *.sqlite3
+*.sqlite-wal
+*.sqlite-shm
 
 # Archivos temporales de la aplicación
 data/

@@ -2,6 +2,7 @@ from collections.abc import Iterator
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool, StaticPool
 
 from document_engine.settings import get_settings
 
@@ -13,10 +14,25 @@ def make_engine(database_url: str | None = None):
     # en paralelo + peticiones HTTP concurrentes tocando el mismo archivo, un
     # choque de locks bajo carga real es mucho más probable que en desarrollo
     # con una sola conexión a la vez.
-    connect_args = {"check_same_thread": False, "timeout": 30} if url.startswith("sqlite") else {}
-    engine = create_engine(url, connect_args=connect_args)
+    if not url.startswith("sqlite"):
+        return create_engine(url)
 
-    if url.startswith("sqlite") and ":memory:" not in url:
+    connect_args = {"check_same_thread": False, "timeout": 30}
+    if ":memory:" in url:
+        # En pruebas: una sola conexión compartida (StaticPool), si no cada
+        # conexión vería su propia base en memoria vacía.
+        engine = create_engine(url, connect_args=connect_args, poolclass=StaticPool)
+    else:
+        # NullPool: cada sesión abre su propia conexión y la cierra al terminar,
+        # sin un pool acotado que pueda AGOTARSE. Es deliberado: con varios
+        # workers en paralelo procesando archivos enormes (varios GB), si un
+        # elemento supera el timeout duro su hilo se abandona sin devolver la
+        # conexión; con un QueuePool acotado esas conexiones colgadas se
+        # acumulaban hasta agotar el pool y tumbaban HASTA los GET de estado.
+        # Las conexiones SQLite son baratas de abrir, así que no hay costo real.
+        engine = create_engine(url, connect_args=connect_args, poolclass=NullPool)
+
+    if ":memory:" not in url:
         # WAL permite lectores concurrentes + un escritor sin bloquearse entre
         # sí (a diferencia del journal por defecto, que serializa todo). Es
         # clave ahora que `POST .../run` procesa varios elementos en paralelo,

@@ -44,6 +44,7 @@ def create_batch(payload: BatchCreate, db: Session = Depends(get_db)) -> Migrati
         name=payload.name,
         priority=payload.priority,
         destination_base_path=payload.destination_base_path,
+        skip_existing=payload.skip_existing,
     )
 
 
@@ -87,6 +88,7 @@ def create_batch_from_selection(
         name=payload.name,
         priority=payload.priority,
         destination_base_path=payload.destination_base_path,
+        skip_existing=payload.skip_existing,
     )
     for node in payload.selections:
         kind = SelectorKind.FOLDER_RECURSIVE if node.type == ItemType.FOLDER.value else SelectorKind.EXPLICIT_IDS
