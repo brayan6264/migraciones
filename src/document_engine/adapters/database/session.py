@@ -15,7 +15,12 @@ def make_engine(database_url: str | None = None):
     # choque de locks bajo carga real es mucho más probable que en desarrollo
     # con una sola conexión a la vez.
     if not url.startswith("sqlite"):
-        return create_engine(url)
+        # Neon (y PgBouncer en general) opera en modo transacción: el pooler
+        # asigna una conexión de backend por transacción, no por sesión. Si
+        # SQLAlchemy mantiene su propio pool encima se duplican conexiones y
+        # pueden aparecer errores de estado. NullPool delega toda la gestión
+        # de conexiones al pooler externo. pool_pre_ping no aplica con NullPool.
+        return create_engine(url, poolclass=NullPool)
 
     connect_args = {"check_same_thread": False, "timeout": 30}
     if ":memory:" in url:
