@@ -268,6 +268,33 @@ class PlanningService:
             .all()
         }
 
+        # Nombres ya aprobados en lotes anteriores (COMPLETED o READY) para los
+        # mismos source_item_id.  Se usa el más reciente por item.
+        # Clave: source_item_id → base del nombre aprobado (sin extensión).
+        prev_stmt = (
+            select(MigrationItemModel)
+            .where(
+                MigrationItemModel.source_item_id.in_(list(priority_by_id.keys())),
+                MigrationItemModel.batch_id != batch_id,
+                MigrationItemModel.state.in_(
+                    [MigrationItemState.COMPLETED.value, MigrationItemState.READY.value]
+                ),
+                MigrationItemModel.planned_destination_name.isnot(None),
+            )
+            .order_by(
+                MigrationItemModel.completed_at.desc().nullslast(),
+                MigrationItemModel.updated_at.desc(),
+            )
+        )
+        approved_base_by_id: dict[str, str] = {}
+        for prev in self._db.execute(prev_stmt).scalars().all():
+            if prev.source_item_id in approved_base_by_id:
+                continue  # ya tenemos el más reciente
+            name = prev.planned_destination_name
+            if prev.extension and name and name.endswith("." + prev.extension):
+                name = name[: -(len(prev.extension) + 1)]
+            approved_base_by_id[prev.source_item_id] = name or ""
+
         destination_path_by_source_id: dict[str, str] = {}
         used_names_by_parent: dict[str, dict[str, set[str]]] = {}
 
@@ -326,7 +353,13 @@ class PlanningService:
                 planned_name = None
                 planned_path = None
             else:
-                if normalized.needs_ai:
+                inherited_base = approved_base_by_id.get(source_id) if action != PlannedAction.BLOCK else None
+                if inherited_base:
+                    # Reutilizar el nombre ya aprobado en una migración anterior;
+                    # no se necesita revisión de IA ni manual.
+                    candidate_base = inherited_base
+                    rename_method = RenameMethod.INHERITED
+                elif normalized.needs_ai:
                     state = MigrationItemState.WAITING_REVIEW
                     rename_method = RenameMethod.AI_ASSISTED
                     warnings.append("Nombre supera 25 caracteres: requiere asistencia de IA (sprint 4)")

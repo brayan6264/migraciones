@@ -47,6 +47,7 @@ class RenameMethod(StrEnum):
     AI_ASSISTED = "AI_ASSISTED"
     MANUAL_OVERRIDE = "MANUAL_OVERRIDE"
     COLLISION_RESOLUTION = "COLLISION_RESOLUTION"
+    INHERITED = "INHERITED"  # nombre copiado de una migración anterior ya aprobada
 
 
 class PlannedAction(StrEnum):

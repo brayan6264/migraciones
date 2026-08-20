@@ -194,3 +194,51 @@ class BatchReportOut(BaseModel):
 class ConnectivityTestOut(BaseModel):
     ok: bool
     detail: str
+
+
+class FileStatusItem(BaseModel):
+    source_item_id: str
+    name: str
+    item_type: str
+    logical_path: str
+    size: int | None
+    migration_status: str  # COMPLETED | IN_PROGRESS | PENDING
+    match_type: str | None  # direct | by_path | None
+    migration_item_id: str | None
+    migration_state: str | None
+    batch_id: str | None
+    completed_at: datetime | None
+
+
+class SnapshotMigrationStatusOut(BaseModel):
+    snapshot_id: str
+    total_items: int
+    total_files: int
+    total_folders: int
+    completed: int
+    in_progress: int
+    pending: int
+    percent_completed: float
+    items: list[FileStatusItem]
+
+
+class MigrationCheckItem(BaseModel):
+    source_item_id: str
+    logical_path: str
+    item_type: str = "FILE"  # FILE | FOLDER
+
+
+class MigrationCheckRequest(BaseModel):
+    items: list[MigrationCheckItem]
+
+
+class MigrationCheckStatus(BaseModel):
+    status: str  # COMPLETED | PARTIAL | NOT_MIGRATED
+    match_type: str | None = None  # direct | by_path | aggregate
+    completed_at: datetime | None = None
+    completed_count: int | None = None  # sólo para carpetas
+    total_count: int | None = None
+
+
+class MigrationCheckResponse(BaseModel):
+    results: dict[str, MigrationCheckStatus]
