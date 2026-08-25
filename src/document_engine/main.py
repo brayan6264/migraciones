@@ -5,6 +5,7 @@ import socket
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy import inspect as sa_inspect, text
 
 from document_engine.api.routers import batches, discovery, execution, health, items, name_review
 from document_engine.domain.errors import DocumentEngineError, InvalidStateTransition, PermanentError, TransientError
@@ -37,6 +38,20 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.on_event("startup")
+    def _run_schema_migrations() -> None:
+        from document_engine.adapters.database.session import get_engine
+        engine = get_engine()
+        with engine.connect() as conn:
+            insp = sa_inspect(engine)
+            existing = {c["name"] for c in insp.get_columns("migration_batches")}
+            if "skip_existing" not in existing:
+                default = "0" if engine.dialect.name == "sqlite" else "FALSE"
+                conn.execute(text(
+                    f"ALTER TABLE migration_batches ADD COLUMN skip_existing BOOLEAN NOT NULL DEFAULT {default}"
+                ))
+                conn.commit()
 
     app.include_router(health.router)
     app.include_router(discovery.router)

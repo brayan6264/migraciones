@@ -389,26 +389,43 @@ def check_items_migration_status(
 
     if folder_items:
         from sqlalchemy import text as sa_text
+        from document_engine.adapters.database.session import get_engine
 
-        # Una subquery por carpeta (UNION ALL). PostgreSQL extrae la sub-ruta relativa
-        # con CASE + substring/strpos, luego el outer SELECT agrega con COUNT DISTINCT.
+        # Funciones de posición y substring difieren entre PostgreSQL y SQLite.
+        # strpos/substring son de PostgreSQL; instr/substr son de SQLite.
+        _is_sqlite = get_engine().dialect.name == "sqlite"
+
+        def _pos(col: str, sep_param: str) -> str:
+            return f"instr({col}, :{sep_param})" if _is_sqlite else f"strpos({col}, :{sep_param})"
+
+        def _sub(col: str, start_expr: str) -> str:
+            fn = "substr" if _is_sqlite else "substring"
+            return f"{fn}({col}, {start_expr})"
+
+        # En SQLite no normalizamos a NFD porque los paths se almacenan como NFC.
+        def _norm(s: str) -> str:
+            return s if _is_sqlite else _nfd(s)
+
+        # Una subquery por carpeta (UNION ALL). Extrae la sub-ruta relativa dentro
+        # de cada carpeta con CASE + _sub/_pos, luego el outer SELECT agrega con
+        # COUNT DISTINCT eliminando duplicados entre lotes.
         sub_sqls: list[str] = []
         bind: dict[str, object] = {}
 
         for i, f in enumerate(folder_items):
-            nfd_p = _nfd(f.logical_path)
+            norm_p = _norm(f.logical_path)
             # offset 1-based en chars (NFD puede tener más code-points que NFC)
-            off = len(nfd_p) + 2  # len(p) + len("/") + 1 para base-1
-            sep = "/" + nfd_p + "/"
+            off = len(norm_p) + 2  # len(p) + len("/") + 1 para base-1
+            sep = "/" + norm_p + "/"
 
             bind.update({
-                f"lbl{i}": f.logical_path,          # etiqueta NFC para lookup en Python
-                f"p{i}": nfd_p,                      # ruta exacta (NFD)
-                f"pre{i}": nfd_p + "/%",             # prefijo: p/...
-                f"sex{i}": "%/" + nfd_p,             # sufijo exacto: .../p
-                f"ssl{i}": "%/" + nfd_p + "/%",      # sufijo con hijos: .../p/...
-                f"sep{i}": sep,                       # separador /p/ para strpos
-                f"off{i}": off,                       # offset de substring
+                f"lbl{i}": f.logical_path,           # etiqueta original para lookup Python
+                f"p{i}": norm_p,                      # ruta exacta (normalizada)
+                f"pre{i}": norm_p + "/%",             # prefijo: p/...
+                f"sex{i}": "%/" + norm_p,             # sufijo exacto: .../p
+                f"ssl{i}": "%/" + norm_p + "/%",      # sufijo con hijos: .../p/...
+                f"sep{i}": sep,                        # separador /p/ para pos fn
+                f"off{i}": off,                        # offset de substring
             })
 
             # Cada subquery une dos fuentes:
@@ -422,10 +439,10 @@ def check_items_migration_status(
                     :lbl{i} AS folder_path,
                     CASE
                         WHEN logical_path = :p{i} THEN ''
-                        WHEN logical_path LIKE :pre{i} THEN substring(logical_path, :off{i})
+                        WHEN logical_path LIKE :pre{i} THEN {_sub('logical_path', f':off{i}')}
                         WHEN logical_path LIKE :sex{i} THEN ''
                         WHEN logical_path LIKE :ssl{i} THEN
-                            substring(logical_path, strpos(logical_path, :sep{i}) + :off{i})
+                            {_sub('logical_path', f'{_pos("logical_path", f"sep{i}")} + :off{i}')}
                     END AS relative_path,
                     NULL AS state
                 FROM repository_items
@@ -440,10 +457,10 @@ def check_items_migration_status(
                     :lbl{i} AS folder_path,
                     CASE
                         WHEN source_path = :p{i} THEN ''
-                        WHEN source_path LIKE :pre{i} THEN substring(source_path, :off{i})
+                        WHEN source_path LIKE :pre{i} THEN {_sub('source_path', f':off{i}')}
                         WHEN source_path LIKE :sex{i} THEN ''
                         WHEN source_path LIKE :ssl{i} THEN
-                            substring(source_path, strpos(source_path, :sep{i}) + :off{i})
+                            {_sub('source_path', f'{_pos("source_path", f"sep{i}")} + :off{i}')}
                     END AS relative_path,
                     state
                 FROM migration_items
