@@ -470,7 +470,10 @@ def check_items_migration_status(
                    OR source_path LIKE :ssl{i}
             """)
 
-        combined = " UNION ALL ".join(f"({s})" for s in sub_sqls)
+        # SQLite rejects "(compound) UNION ALL (compound)" when operands already
+        # contain UNION ALL internally. A flat join without extra parens is
+        # valid in both SQLite and PostgreSQL.
+        combined = " UNION ALL ".join(sub_sqls)
         agg_sql = f"""
             SELECT
                 folder_path,
