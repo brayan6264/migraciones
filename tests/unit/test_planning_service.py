@@ -275,6 +275,77 @@ def test_manual_override_rejects_invalid_name(snapshot_and_services):
         reviews.override_destination_name(item.id, "A" * 26, changed_by="x")
 
 
+def test_new_plan_inherits_name_from_prior_batch_in_waiting_review(snapshot_and_services):
+    """Un elemento en WAITING_REVIEW en un lote anterior (p.ej. renombrado por IA
+    pero pendiente de revisión humana) debe heredarse en el nuevo plan en vez de
+    volver a sugerir un renombre."""
+    db, snapshot, batches, planning = snapshot_and_services
+
+    # Lote 1: planificar el archivo largo → queda WAITING_REVIEW con nombre truncado
+    batch1 = batches.create_batch(snapshot_id=snapshot.id, name="lote-heredar-1")
+    batches.add_selector(batch1.id, kind=SelectorKind.EXPLICIT_IDS, value="file-long")
+    planning.generate_plan(batch1.id)
+
+    from document_engine.adapters.database.models import MigrationItem as MigrationItemModel
+    from sqlalchemy import select
+
+    item1 = db.execute(
+        select(MigrationItemModel).where(MigrationItemModel.source_item_id == "file-long")
+    ).scalars().one()
+    assert item1.state == MigrationItemState.WAITING_REVIEW.value
+    name_in_batch1 = item1.planned_destination_name
+
+    # Lote 2: re-planificar el mismo archivo en un lote nuevo
+    batch2 = batches.create_batch(snapshot_id=snapshot.id, name="lote-heredar-2")
+    batches.add_selector(batch2.id, kind=SelectorKind.EXPLICIT_IDS, value="file-long")
+    planning.generate_plan(batch2.id)
+
+    item2 = db.execute(
+        select(MigrationItemModel).where(
+            MigrationItemModel.source_item_id == "file-long",
+            MigrationItemModel.batch_id == batch2.id,
+        )
+    ).scalars().one()
+
+    assert item2.planned_destination_name == name_in_batch1
+    assert item2.rename_method == RenameMethod.INHERITED.value
+    assert item2.state == MigrationItemState.PLANNED.value
+
+
+def test_new_plan_inherits_name_from_prior_batch_in_failed(snapshot_and_services):
+    """Un elemento FAILED en un lote anterior ya tenía nombre decidido; el
+    nuevo plan debe heredarlo en lugar de recalcularlo."""
+    db, snapshot, batches, planning = snapshot_and_services
+
+    batch1 = batches.create_batch(snapshot_id=snapshot.id, name="lote-failed-1")
+    batches.add_selector(batch1.id, kind=SelectorKind.EXPLICIT_IDS, value="file-normal")
+    planning.generate_plan(batch1.id)
+
+    from document_engine.adapters.database.models import MigrationItem as MigrationItemModel
+    from sqlalchemy import select
+
+    item1 = db.execute(
+        select(MigrationItemModel).where(MigrationItemModel.source_item_id == "file-normal")
+    ).scalars().one()
+    item1.state = MigrationItemState.FAILED.value
+    db.commit()
+    name_in_batch1 = item1.planned_destination_name
+
+    batch2 = batches.create_batch(snapshot_id=snapshot.id, name="lote-failed-2")
+    batches.add_selector(batch2.id, kind=SelectorKind.EXPLICIT_IDS, value="file-normal")
+    planning.generate_plan(batch2.id)
+
+    item2 = db.execute(
+        select(MigrationItemModel).where(
+            MigrationItemModel.source_item_id == "file-normal",
+            MigrationItemModel.batch_id == batch2.id,
+        )
+    ).scalars().one()
+
+    assert item2.planned_destination_name == name_in_batch1
+    assert item2.rename_method == RenameMethod.INHERITED.value
+
+
 def test_set_batch_priority_before_start_allowed(snapshot_and_services):
     db, snapshot, batches, planning = snapshot_and_services
     batch = batches.create_batch(snapshot_id=snapshot.id, name="ola-o", priority=Priority.NORMAL)

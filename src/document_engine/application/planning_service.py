@@ -271,14 +271,25 @@ class PlanningService:
         # Nombres ya aprobados en lotes anteriores (COMPLETED o READY) para los
         # mismos source_item_id.  Se usa el más reciente por item.
         # Clave: source_item_id → base del nombre aprobado (sin extensión).
+        # Estados que indican que el nombre ya fue decidido en un lote anterior
+        # (por IA, manualmente o por reglas) y debe heredarse en vez de
+        # volver a procesarse. WAITING_REVIEW incluye carpetas que la IA ya
+        # renombró pero el humano aún no aprobó — sin este estado, el nuevo
+        # plan ignoraba esas decisiones y volvía a sugerir un renombre.
+        _STATES_WITH_DECIDED_NAME = [
+            MigrationItemState.WAITING_REVIEW.value,
+            MigrationItemState.READY.value,
+            MigrationItemState.COMPLETED.value,
+            MigrationItemState.SKIPPED.value,
+            MigrationItemState.FAILED.value,
+            MigrationItemState.RETRY_PENDING.value,
+        ]
         prev_stmt = (
             select(MigrationItemModel)
             .where(
                 MigrationItemModel.source_item_id.in_(list(priority_by_id.keys())),
                 MigrationItemModel.batch_id != batch_id,
-                MigrationItemModel.state.in_(
-                    [MigrationItemState.COMPLETED.value, MigrationItemState.READY.value]
-                ),
+                MigrationItemModel.state.in_(_STATES_WITH_DECIDED_NAME),
                 MigrationItemModel.planned_destination_name.isnot(None),
             )
             .order_by(
@@ -289,11 +300,12 @@ class PlanningService:
         approved_base_by_id: dict[str, str] = {}
         for prev in self._db.execute(prev_stmt).scalars().all():
             if prev.source_item_id in approved_base_by_id:
-                continue  # ya tenemos el más reciente
+                continue  # ya tenemos el más reciente con nombre válido
             name = prev.planned_destination_name
             if prev.extension and name and name.endswith("." + prev.extension):
                 name = name[: -(len(prev.extension) + 1)]
-            approved_base_by_id[prev.source_item_id] = name or ""
+            if name:  # ignorar registros con nombre vacío; el siguiente en orden puede tenerlo
+                approved_base_by_id[prev.source_item_id] = name
 
         destination_path_by_source_id: dict[str, str] = {}
         used_names_by_parent: dict[str, dict[str, set[str]]] = {}
@@ -393,6 +405,7 @@ class PlanningService:
                 destination_path_by_source_id[source_id] = planned_path
 
             idempotency_key = compute_idempotency_key(
+                batch_id=batch_id,
                 snapshot_id=batch.snapshot_id,
                 source_provider="google_drive",
                 source_item_id=source_id,
