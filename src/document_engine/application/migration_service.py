@@ -11,7 +11,6 @@ from document_engine.adapters.filesystem.temp_storage import TempFileStorage
 from document_engine.domain.entities import RepositoryItem
 from document_engine.domain.enums import ItemType, MigrationItemState
 from document_engine.domain.errors import (
-    NAME_COLLISION_UNRESOLVED,
     VALIDATION_SIZE_MISMATCH,
     PermanentError,
     TransientError,
@@ -319,10 +318,7 @@ class Builder:
             )
 
         if self._destination.exists(final_path):
-            raise PermanentError(
-                f"El destino ya existe, no se sobrescribe: {final_path}",
-                code=NAME_COLLISION_UNRESOLVED,
-            )
+            self._destination.delete(final_path)
 
         self._destination.rename(temp_path, final_path)
         item.remote_size = remote_size

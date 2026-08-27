@@ -200,7 +200,7 @@ def test_size_mismatch_fails_item_and_does_not_rename(builder_env, tmp_path):
     assert not bad_destination.exists("ROOT/CARPETA_A/REPORTE.pdf")
 
 
-def test_existing_destination_is_never_silently_overwritten(builder_env, tmp_path):
+def test_existing_destination_is_overwritten(builder_env, tmp_path):
     db, batch, destination = builder_env
     item = make_ready_item(db, batch.id)
     destination.ensure_directory("ROOT/CARPETA_A")
@@ -212,9 +212,8 @@ def test_existing_destination_is_never_silently_overwritten(builder_env, tmp_pat
     builder = Builder(db, source, destination, TempFileStorage(tmp_path))
     resolved = builder.process_item(item.id)
 
-    assert resolved.state == MigrationItemState.FAILED.value
-    assert resolved.last_error_code == "NAME_COLLISION_UNRESOLVED"
-    assert destination._files["ROOT/CARPETA_A/REPORTE.pdf"] == b"archivo preexistente ajeno"
+    assert resolved.state == MigrationItemState.COMPLETED.value
+    assert destination._files["ROOT/CARPETA_A/REPORTE.pdf"] == b"contenido nuevo"
 
 
 def test_transient_error_retries_with_backoff_then_fails(builder_env, tmp_path):
@@ -293,9 +292,9 @@ def test_skip_existing_migrates_file_not_yet_present(tmp_path):
     assert destination.exists("ROOT/CARPETA_A/REPORTE.pdf")
 
 
-def test_skip_existing_does_not_skip_when_size_differs(tmp_path):
-    """Si el destino existe pero con OTRO tamaño (archivo distinto), NO se
-    omite: se deja fallar por colisión para avisar, en vez de ignorarlo."""
+def test_skip_existing_overwrites_when_size_differs(tmp_path):
+    """Si el destino existe pero con OTRO tamaño (archivo distinto), se
+    sobrescribe: el archivo de Drive reemplaza al existente en el servidor."""
     db = make_session()
     batch = make_batch(db, skip_existing=True)
     item = make_ready_item(db, batch.id, source_size=len(b"contenido nuevo"))
@@ -309,28 +308,28 @@ def test_skip_existing_does_not_skip_when_size_differs(tmp_path):
     builder = Builder(db, source, destination, TempFileStorage(tmp_path))
     resolved = builder.process_item(item.id)
 
-    assert resolved.state == MigrationItemState.FAILED.value
-    assert resolved.last_error_code == "NAME_COLLISION_UNRESOLVED"
+    assert resolved.state == MigrationItemState.COMPLETED.value
+    assert destination._files["ROOT/CARPETA_A/REPORTE.pdf"] == b"contenido nuevo"
 
 
-def test_without_skip_existing_collision_still_fails(tmp_path):
-    """Sin modo sincronización (default), un destino ya existente sigue
-    fallando por colisión — la garantía de no sobrescribir no cambia."""
+def test_without_skip_existing_destination_is_overwritten(tmp_path):
+    """Sin modo sincronización (default), un destino ya existente se
+    sobrescribe con el contenido proveniente de Drive."""
     db = make_session()
     batch = make_batch(db)  # skip_existing=False
-    item = make_ready_item(db, batch.id, source_size=len(b"contenido"))
+    item = make_ready_item(db, batch.id, source_size=len(b"contenido nuevo"))
     destination = FakeDestinationRepository()
     destination.ensure_directory("ROOT/CARPETA_A")
-    destination._files["ROOT/CARPETA_A/REPORTE.pdf"] = b"contenido"
-    source = FakeSourceRepository([], contents={"file-1": b"contenido"})
+    destination._files["ROOT/CARPETA_A/REPORTE.pdf"] = b"contenido viejo"
+    source = FakeSourceRepository([], contents={"file-1": b"contenido nuevo"})
 
     from document_engine.adapters.filesystem.temp_storage import TempFileStorage
 
     builder = Builder(db, source, destination, TempFileStorage(tmp_path))
     resolved = builder.process_item(item.id)
 
-    assert resolved.state == MigrationItemState.FAILED.value
-    assert resolved.last_error_code == "NAME_COLLISION_UNRESOLVED"
+    assert resolved.state == MigrationItemState.COMPLETED.value
+    assert destination._files["ROOT/CARPETA_A/REPORTE.pdf"] == b"contenido nuevo"
 
 
 def test_already_completed_item_is_noop(builder_env, tmp_path):

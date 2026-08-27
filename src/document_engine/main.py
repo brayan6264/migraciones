@@ -45,6 +45,11 @@ def create_app() -> FastAPI:
         engine = get_engine()
         with engine.connect() as conn:
             insp = sa_inspect(engine)
+            # Guard: if the table doesn't exist yet (fresh database, alembic
+            # upgrade head has not been run), there is nothing to do — Alembic
+            # will create it with all columns including skip_existing.
+            if not insp.has_table("migration_batches"):
+                return
             existing = {c["name"] for c in insp.get_columns("migration_batches")}
             if "skip_existing" not in existing:
                 default = "0" if engine.dialect.name == "sqlite" else "FALSE"
