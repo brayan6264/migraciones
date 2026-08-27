@@ -101,6 +101,8 @@ def regenerate_ai_name(
 
     settings = get_settings()
     service = NamingAssistantService(db, ai_provider, naming_engine, ai_model_name=settings.openai_rename_model)
+    # Acción explícita de una persona sobre UN elemento: aquí sí se quiere
+    # una sugerencia nueva, así que se saltan la caché y el nombre heredado.
     return service.resolve_item(
         item_id,
         obtc_code=payload.obtc_code,
@@ -108,4 +110,6 @@ def regenerate_ai_name(
         version=payload.version,
         category=payload.category,
         force=payload.force,
+        ignore_cache=True,
+        ignore_inherited=True,
     )

@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from document_engine.adapters.database.models import JournalEvent, NameDecision
 from document_engine.adapters.database.models import MigrationItem as MigrationItemModel
+from document_engine.application.name_inheritance import inherited_base_for_item
 from document_engine.application.planning_service import cascade_folder_rename
 from document_engine.domain.enums import ItemType, MigrationItemState, RenameMethod
 from document_engine.domain.errors import DocumentEngineError
@@ -172,6 +173,71 @@ class NamingAssistantService:
             names
         )
 
+    def _apply_inherited_name(self, item: MigrationItemModel, inherited_base: str) -> MigrationItemModel:
+        """Copia un nombre ya decidido para el mismo origen en otra migración,
+        sin llamar a la IA y sin dejar el elemento pendiente de revisión: ese
+        nombre ya fue revisado (o ya está escrito en el destino) en su
+        momento. La única excepción es una colisión irresoluble en la carpeta
+        destino, que sí exige ojo humano."""
+        extension = item.extension or ""
+        existing_bases = self._existing_sibling_bases(item, extension)
+        resolution = self._naming.resolve_collision(inherited_base, existing_bases)
+        method = (
+            RenameMethod.COLLISION_RESOLUTION if resolution.suffix_used else RenameMethod.INHERITED
+        )
+
+        dest_parent_path = (
+            item.planned_destination_path.rsplit("/", 1)[0]
+            if item.planned_destination_path and "/" in item.planned_destination_path
+            else ""
+        )
+        final_name = f"{resolution.final_base}.{extension}" if extension else resolution.final_base
+        final_path = f"{dest_parent_path}/{final_name}" if dest_parent_path else final_name
+
+        previous_state = item.state
+        old_path = item.planned_destination_path
+        item.planned_destination_name = final_name
+        item.planned_destination_path = final_path
+        item.rename_method = method.value
+        if item.item_type == ItemType.FOLDER.value:
+            cascade_folder_rename(self._db, item.batch_id, old_path, final_path)
+        # `requires_review` aquí solo se da en el caso patológico de más de 99
+        # colisiones del mismo nombre; en ese caso el elemento sí necesita ojo
+        # humano aunque el nombre venga heredado.
+        if resolution.requires_review:
+            if item.state != MigrationItemState.WAITING_REVIEW.value:
+                item.state = transition(
+                    MigrationItemState(item.state), MigrationItemState.WAITING_REVIEW
+                ).value
+        elif item.state == MigrationItemState.WAITING_REVIEW.value:
+            item.state = transition(MigrationItemState.WAITING_REVIEW, MigrationItemState.READY).value
+
+        self._db.add(
+            NameDecision(
+                migration_item_id=item.id,
+                method=method.value,
+                suggested_name=final_name,
+                requires_review=resolution.requires_review,
+            )
+        )
+        self._db.add(
+            JournalEvent(
+                batch_id=item.batch_id,
+                migration_item_id=item.id,
+                event_type="NAME_INHERITED",
+                previous_state=previous_state,
+                new_state=item.state,
+                operation="INHERIT",
+                result="OK",
+                original_name=item.source_name,
+                final_name=final_name,
+                name_decision_source=method.value,
+                metadata_json={"inherited_base": inherited_base, "tokens_used": 0},
+            )
+        )
+        self._db.commit()
+        return item
+
     def resolve_item(
         self,
         item_id: str,
@@ -182,7 +248,16 @@ class NamingAssistantService:
         category: str | None = None,
         local_context: str = "",
         force: bool = False,
+        ignore_cache: bool = False,
+        ignore_inherited: bool = False,
     ) -> MigrationItemModel:
+        """`force` solo levanta la restricción de "esto aplica únicamente a
+        nombres de más de 25 caracteres". Reprocesar de verdad (ignorar la
+        caché de la huella del prompt o el nombre heredado de una migración
+        anterior) exige pedirlo aparte con `ignore_cache`/`ignore_inherited`:
+        el renombrado masivo del lote pasa `force=True` para poder tocar
+        elementos de cualquier método, y antes eso lo obligaba a pagarle a la
+        IA por un nombre que ya estaba decidido — y a recibir uno distinto."""
         item = self._db.get(MigrationItemModel, item_id)
         if item is None:
             raise DocumentEngineError(f"Elemento {item_id} no existe", code="NOT_FOUND")
@@ -192,6 +267,15 @@ class NamingAssistantService:
                 "regenerate-ai-name solo aplica a nombres que superan 25 caracteres, salvo orden explícita",
                 code="NAME_AI_NOT_APPLICABLE",
             )
+
+        # Este mismo origen ya fue nombrado en otro lote: se reutiliza tal
+        # cual, sin llamar a la IA. Sin esto, cada lote le pregunta de nuevo
+        # al modelo y obtiene una abreviatura distinta para la misma carpeta,
+        # que en el FTP termina como carpetas duplicadas.
+        if not ignore_inherited:
+            inherited = inherited_base_for_item(self._db, item)
+            if inherited:
+                return self._apply_inherited_name(item, inherited)
 
         # Si el nombre trae un código de fase/numeración obligatorio (F3E03,
         # F2E2, "1", …) y no se dio un OBTC explícito, se toma como el código
@@ -231,7 +315,7 @@ class NamingAssistantService:
             abbreviation_catalog=self._naming.abbreviations,
         )
 
-        cached = None if force else self._cached_decision(fingerprint)
+        cached = None if ignore_cache else self._cached_decision(fingerprint)
         tokens_used = None
         fallback_reason = None
         ai_reason = None

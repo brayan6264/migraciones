@@ -13,6 +13,7 @@ from document_engine.adapters.database.models import MigrationItem as MigrationI
 from document_engine.adapters.database.models import MigrationPlan as MigrationPlanModel
 from document_engine.adapters.database.models import NameDecision
 from document_engine.adapters.database.models import RepositoryItem as RepositoryItemModel
+from document_engine.application.name_inheritance import inherited_bases
 from document_engine.domain.enums import (
     ItemType,
     MigrationItemState,
@@ -268,44 +269,13 @@ class PlanningService:
             .all()
         }
 
-        # Nombres ya aprobados en lotes anteriores (COMPLETED o READY) para los
-        # mismos source_item_id.  Se usa el más reciente por item.
-        # Clave: source_item_id → base del nombre aprobado (sin extensión).
-        # Estados que indican que el nombre ya fue decidido en un lote anterior
-        # (por IA, manualmente o por reglas) y debe heredarse en vez de
-        # volver a procesarse. WAITING_REVIEW incluye carpetas que la IA ya
-        # renombró pero el humano aún no aprobó — sin este estado, el nuevo
-        # plan ignoraba esas decisiones y volvía a sugerir un renombre.
-        _STATES_WITH_DECIDED_NAME = [
-            MigrationItemState.WAITING_REVIEW.value,
-            MigrationItemState.READY.value,
-            MigrationItemState.COMPLETED.value,
-            MigrationItemState.SKIPPED.value,
-            MigrationItemState.FAILED.value,
-            MigrationItemState.RETRY_PENDING.value,
-        ]
-        prev_stmt = (
-            select(MigrationItemModel)
-            .where(
-                MigrationItemModel.source_item_id.in_(list(priority_by_id.keys())),
-                MigrationItemModel.batch_id != batch_id,
-                MigrationItemModel.state.in_(_STATES_WITH_DECIDED_NAME),
-                MigrationItemModel.planned_destination_name.isnot(None),
-            )
-            .order_by(
-                MigrationItemModel.completed_at.desc().nullslast(),
-                MigrationItemModel.updated_at.desc(),
-            )
+        # Nombres ya decididos para los mismos `source_item_id` en OTROS lotes.
+        # Regla de negocio: lo que ya se migró (o ya se nombró) no vuelve a
+        # pasar por IA — se reutiliza el nombre anterior. Ver
+        # `application/name_inheritance.py` para qué cuenta como "ya decidido".
+        approved_base_by_id = inherited_bases(
+            self._db, priority_by_id.keys(), exclude_batch_id=batch_id
         )
-        approved_base_by_id: dict[str, str] = {}
-        for prev in self._db.execute(prev_stmt).scalars().all():
-            if prev.source_item_id in approved_base_by_id:
-                continue  # ya tenemos el más reciente con nombre válido
-            name = prev.planned_destination_name
-            if prev.extension and name and name.endswith("." + prev.extension):
-                name = name[: -(len(prev.extension) + 1)]
-            if name:  # ignorar registros con nombre vacío; el siguiente en orden puede tenerlo
-                approved_base_by_id[prev.source_item_id] = name
 
         destination_path_by_source_id: dict[str, str] = {}
         used_names_by_parent: dict[str, dict[str, set[str]]] = {}

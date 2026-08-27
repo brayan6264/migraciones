@@ -263,6 +263,10 @@ def run_ai_rename_in_background(
         service = NamingAssistantService(db, ai_provider, naming_engine, ai_model_name=ai_model_name)
         for item_id in pending_ids:
             try:
+                # `force=True` solo para poder tocar elementos de cualquier
+                # método de renombrado. La caché y el nombre heredado de una
+                # migración anterior SÍ se respetan: el renombrado masivo no
+                # debe volver a pedirle a la IA un nombre ya decidido.
                 service.resolve_item(item_id, force=True)
             except Exception:  # noqa: BLE001 - no debe tumbar el hilo de fondo
                 logger.exception("Error generando nombre IA para %s en el lote %s", item_id, batch_id)
