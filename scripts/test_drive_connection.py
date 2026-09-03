@@ -15,7 +15,11 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from document_engine.adapters.google_drive.client import build_drive_client, build_drive_client_api_key
+from document_engine.adapters.google_drive.client import (
+    build_drive_client,
+    build_drive_client_api_key,
+    build_service_account_credentials,
+)
 from document_engine.adapters.google_drive.drive_repository import GoogleDriveRepository
 from document_engine.settings import get_settings
 
@@ -34,7 +38,7 @@ def main() -> None:
         if not settings.google_service_account_file:
             print("\nFALLO: GOOGLE_SERVICE_ACCOUNT_FILE no configurado")
             raise SystemExit(1)
-        client = build_drive_client(settings.google_service_account_file)
+        client = build_drive_client(build_service_account_credentials(settings.google_service_account_file))
 
     if not settings.google_root_folder_id:
         print("\nFALLO: GOOGLE_ROOT_FOLDER_ID no configurado")

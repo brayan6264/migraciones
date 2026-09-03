@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from document_engine.adapters.database.session import get_session_factory
 from document_engine.adapters.filesystem.temp_storage import TempFileStorage
 from document_engine.adapters.ftp.ftp_repository import FTPRepository
-from document_engine.adapters.google_drive.client import build_drive_client
+from document_engine.adapters.google_drive.client import build_drive_client, build_service_account_credentials
 from document_engine.adapters.google_drive.drive_repository import GoogleDriveRepository
 from document_engine.application.migration_service import Builder
 from document_engine.settings import get_settings
@@ -34,8 +34,9 @@ def main() -> None:
 
     settings = get_settings()
     db = get_session_factory()()
+    credentials = build_service_account_credentials(settings.google_service_account_file)
     source = GoogleDriveRepository(
-        build_drive_client(settings.google_service_account_file), shared_drive_id=settings.google_shared_drive_id
+        build_drive_client(credentials), shared_drive_id=settings.google_shared_drive_id
     )
     destination = FTPRepository(
         host=settings.ftp_host,

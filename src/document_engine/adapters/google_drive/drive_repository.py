@@ -3,6 +3,8 @@ from __future__ import annotations
 import io
 import json
 import tempfile
+import threading
+import time
 from collections.abc import Iterator
 from datetime import datetime
 from typing import IO
@@ -25,10 +27,56 @@ GOOGLE_SHORTCUT_MIME = "application/vnd.google-apps.shortcut"
 # como "permiso denegado" para siempre en vez de reintentarse.
 _RATE_LIMIT_REASONS = {"userRateLimitExceeded", "rateLimitExceeded", "quotaExceeded", "dailyLimitExceeded"}
 
+DRIVE_ABUSE_COOLDOWN = "DRIVE_ABUSE_COOLDOWN"
+
 # Reintentos con backoff exponencial que la propia librería de Google ya
 # implementa (ver `googleapiclient.http._should_retry_response`), pero que no
 # se activan a menos que se pase `num_retries` explícitamente en cada llamada.
 _NUM_RETRIES = 5
+
+# --- Enfriamiento compartido entre TODOS los workers del proceso --------
+#
+# El límite/bloqueo por abuso de Google (sección `_is_rate_limit_error`) es
+# por IP, no por elemento: mientras está activo, CUALQUIER request desde
+# este proceso lo va a pisar, sin importar qué worker o qué archivo la
+# origine. El backoff de `Builder._fail` es por-elemento — con varios
+# workers en paralelo, mientras uno espera su backoff los otros dos siguen
+# golpeando a Drive y renuevan el bloqueo, así que nunca alcanza a
+# levantarse (el síntoma reportado: "con el fix sale el mismo error").
+#
+# Este gate es el complemento: en cuanto UN worker detecta el bloqueo,
+# TODOS los workers dejan de intentar llamadas a Drive (fallan rápido, sin
+# tocar la red) hasta que el enfriamiento expira, dándole a Google tiempo
+# real de despejarlo en vez de mantenerlo indefinidamente activo.
+_ABUSE_COOLDOWN_BASE_SECONDS = 60
+_ABUSE_COOLDOWN_MAX_SECONDS = 600
+_abuse_lock = threading.Lock()
+_abuse_cooldown_until = 0.0
+_abuse_last_duration = 0.0
+
+
+def _trip_abuse_cooldown() -> None:
+    global _abuse_cooldown_until, _abuse_last_duration
+    with _abuse_lock:
+        now = time.monotonic()
+        if now < _abuse_cooldown_until:
+            # Ya estábamos enfriando y volvió a pasar: el bloqueo sigue
+            # activo, así que se duplica la espera (con techo) en vez de
+            # reiniciar siempre al mínimo.
+            duration = min(_abuse_last_duration * 2, _ABUSE_COOLDOWN_MAX_SECONDS)
+        else:
+            duration = _ABUSE_COOLDOWN_BASE_SECONDS
+        _abuse_last_duration = duration
+        _abuse_cooldown_until = now + duration
+
+
+def _check_abuse_cooldown() -> None:
+    remaining = _abuse_cooldown_until - time.monotonic()
+    if remaining > 0:
+        raise TransientError(
+            f"Google Drive en enfriamiento tras bloqueo por abuso ({remaining:.0f}s restantes)",
+            code=DRIVE_ABUSE_COOLDOWN,
+        )
 
 
 def _parse_time(value: str | None) -> datetime | None:
@@ -117,6 +165,7 @@ class GoogleDriveRepository(SourceRepositoryPort):
         page_token = None
         query = f"'{folder_id}' in parents and trashed = false"
         while True:
+            _check_abuse_cooldown()
             try:
                 response = (
                     self._client.files()
@@ -145,6 +194,7 @@ class GoogleDriveRepository(SourceRepositoryPort):
                 break
 
     def get_item(self, item_id: str) -> RepositoryItem:
+        _check_abuse_cooldown()
         try:
             raw = (
                 self._client.files()
@@ -238,6 +288,7 @@ class GoogleDriveRepository(SourceRepositoryPort):
             raise PermanentError(
                 f"Sin permiso de descarga para {item.source_item_id}", code=DRIVE_PERMISSION_DENIED
             )
+        _check_abuse_cooldown()
         self._reset_connection()
         try:
             request = self._client.files().get_media(fileId=item.source_item_id, supportsAllDrives=True)
@@ -261,6 +312,7 @@ class GoogleDriveRepository(SourceRepositoryPort):
             raise TransientError(str(exc)) from exc
 
     def export(self, item: RepositoryItem, target_mime_type: str) -> IO[bytes]:
+        _check_abuse_cooldown()
         self._reset_connection()
         try:
             request = self._client.files().export_media(
@@ -318,8 +370,16 @@ class GoogleDriveRepository(SourceRepositoryPort):
             return PermanentError(str(exc), code=DRIVE_ITEM_NOT_FOUND)
         if status == 403:
             if GoogleDriveRepository._is_rate_limit_error(exc):
+                # Dispara el enfriamiento COMPARTIDO (no solo el backoff de
+                # este elemento): si es el bloqueo por abuso, cualquier otro
+                # worker que siga llamando a Drive en este momento lo va a
+                # volver a pisar y a renovarlo indefinidamente.
+                _trip_abuse_cooldown()
                 return TransientError(str(exc))
             return PermanentError(str(exc), code=DRIVE_PERMISSION_DENIED)
-        if status in (429, 500, 502, 503, 504):
+        if status == 429:
+            _trip_abuse_cooldown()
+            return TransientError(str(exc))
+        if status in (500, 502, 503, 504):
             return TransientError(str(exc))
         return PermanentError(str(exc))

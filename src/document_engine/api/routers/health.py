@@ -5,6 +5,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from document_engine.api.dependencies import get_db, get_destination_repository, require_api_key
+from document_engine.api.dependencies import _build_drive_client as build_configured_drive_client
 from document_engine.api.schemas import ConnectivityTestOut, FtpBrowseItemOut
 from document_engine.ports.destination_repository import DestinationRepositoryPort
 from document_engine.settings import Settings, get_settings
@@ -45,13 +46,7 @@ def test_google_drive(settings: Settings = Depends(get_settings)) -> Connectivit
     elif not settings.google_service_account_file:
         return ConnectivityTestOut(ok=False, detail="GOOGLE_SERVICE_ACCOUNT_FILE no configurado")
     try:
-        from document_engine.adapters.google_drive.client import build_drive_client, build_drive_client_api_key
-
-        client = (
-            build_drive_client_api_key(settings.google_api_key, timeout_seconds=settings.google_timeout_seconds)
-            if settings.google_auth_mode == "api_key"
-            else build_drive_client(settings.google_service_account_file, timeout_seconds=settings.google_timeout_seconds)
-        )
+        client = build_configured_drive_client(settings)
         if settings.google_root_folder_id:
             client.files().get(fileId=settings.google_root_folder_id, fields="id,name").execute()
         return ConnectivityTestOut(ok=True, detail="Conexión y credenciales válidas")

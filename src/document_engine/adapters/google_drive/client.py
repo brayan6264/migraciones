@@ -19,10 +19,33 @@ FIELDS = (
 _DEFAULT_TIMEOUT_SECONDS = 120
 
 
-def build_drive_client(service_account_file: str, *, timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS) -> Resource:
-    credentials = service_account.Credentials.from_service_account_file(
-        service_account_file, scopes=SCOPES
-    )
+def build_service_account_credentials(service_account_file: str) -> service_account.Credentials:
+    """Carga las credenciales de la cuenta de servicio UNA sola vez para
+    reutilizarlas entre elementos (sección de rendimiento/cuota de Drive).
+
+    `Credentials.from_service_account_file` no hace ninguna llamada de red
+    por sí sola, pero el objeto que devuelve cachea el access token y solo
+    lo renueva cuando expira (~1h) — si en cambio se crea una instancia
+    NUEVA por cada elemento (como se hacía antes), cada una arranca sin
+    token y fuerza su propio intercambio OAuth contra
+    `oauth2.googleapis.com` en la primera llamada. Con miles de elementos
+    eso multiplica el volumen de peticiones automatizadas desde la misma
+    IP hacia dominios de Google, y es lo que dispara el bloqueo
+    anti-abuso de su front-end (la página HTML "Sorry...", ver
+    `GoogleDriveRepository._is_rate_limit_error`) — no solo contra la API
+    de Drive en sí. Es seguro compartir esta instancia entre hilos:
+    `google-auth` serializa su propio refresh internamente."""
+    return service_account.Credentials.from_service_account_file(service_account_file, scopes=SCOPES)
+
+
+def build_drive_client(
+    credentials: service_account.Credentials, *, timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS
+) -> Resource:
+    """Construye un cliente de Drive NUEVO (socket/pool de httplib2 propio,
+    necesario para el aislamiento entre workers en paralelo y para que
+    abandonar un hilo colgado no deje conexiones envenenadas) pero sobre
+    unas credenciales YA autenticadas y compartidas — ver
+    `build_service_account_credentials`."""
     http = AuthorizedHttp(credentials, http=httplib2.Http(timeout=timeout_seconds))
     return build("drive", "v3", http=http, cache_discovery=False)
 

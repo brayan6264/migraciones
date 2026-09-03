@@ -83,6 +83,23 @@ def get_source_factory(
     return lambda: build_source_repository(settings)
 
 
+@lru_cache
+def _drive_credentials_for(service_account_file: str):
+    """Cachea las credenciales OAuth por archivo (`@lru_cache` a nivel de
+    proceso): con `worker_concurrency` workers procesando miles de
+    elementos, cada uno llamaba antes a `_build_drive_client` -> nuevas
+    credenciales -> un intercambio de token nuevo contra
+    `oauth2.googleapis.com` POR ELEMENTO. Ese volumen de peticiones
+    automatizadas repetidas desde la misma IP es lo que dispara el bloqueo
+    anti-abuso de Google (la página HTML "Sorry...", sección
+    `GoogleDriveRepository._is_rate_limit_error`). Reutilizar el mismo
+    objeto de credenciales entre elementos reduce ese volumen a ~1 refresh
+    por hora (la validez del token) en vez de uno por archivo."""
+    from document_engine.adapters.google_drive.client import build_service_account_credentials
+
+    return build_service_account_credentials(service_account_file)
+
+
 def _build_drive_client(settings: Settings):
     from document_engine.adapters.google_drive.client import build_drive_client, build_drive_client_api_key
 
@@ -92,7 +109,8 @@ def _build_drive_client(settings: Settings):
         return build_drive_client_api_key(settings.google_api_key, timeout_seconds=settings.google_timeout_seconds)
     if not settings.google_service_account_file:
         raise HTTPException(status_code=503, detail="GOOGLE_SERVICE_ACCOUNT_FILE no configurado")
-    return build_drive_client(settings.google_service_account_file, timeout_seconds=settings.google_timeout_seconds)
+    credentials = _drive_credentials_for(str(settings.google_service_account_file))
+    return build_drive_client(credentials, timeout_seconds=settings.google_timeout_seconds)
 
 
 def build_destination_repository(settings: Settings) -> DestinationRepositoryPort:
