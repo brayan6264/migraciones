@@ -175,3 +175,64 @@ def test_run_batch_single_worker_still_completes(tmp_path):
     assert batch.status == "COMPLETED"
     assert remaining == []
     assert source.max_concurrent == 1
+
+
+class _CrashingSource:
+    """Origen fake que lanza una excepción CRUDA (ni `TransientError` ni
+    `PermanentError`) — simula, por ejemplo, un `OperationalError` de
+    SQLAlchemy/Postgres a mitad de un `commit`, que `Builder.process_item`
+    no traduce y por lo tanto no pasa por `_fail()`."""
+
+    def get_item(self, item_id):  # pragma: no cover
+        raise NotImplementedError
+
+    def list_children(self, folder_id):  # pragma: no cover
+        raise NotImplementedError
+
+    def walk(self, root_id):  # pragma: no cover
+        raise NotImplementedError
+
+    def export(self, item, target_mime_type):  # pragma: no cover
+        raise NotImplementedError
+
+    def open_download_stream(self, item, *, offset: int = 0):
+        raise RuntimeError("fallo inesperado no traducido")
+
+
+def test_item_crash_releases_lease_immediately_instead_of_hours(tmp_path):
+    """Reproduce el bug reportado: un elemento cuyo procesamiento lanza una
+    excepción no traducida a `TransientError`/`PermanentError` NO debe
+    quedar invisible durante horas (con el lease del `claim` original
+    todavía vigente) — debe liberarse de inmediato, quedar en un estado
+    terminal/reintentable, y dejar un `JournalEvent` explicando por qué."""
+    from document_engine.adapters.database.models import JournalEvent
+
+    session_factory = _make_file_db(tmp_path)
+    batch_id, _contents = _seed_batch(session_factory, n_items=1)
+    temp_storage = TempFileStorage(tmp_path / "tmp")
+
+    run_batch_in_background(
+        batch_id,
+        session_factory=session_factory,
+        source_factory=lambda: _CrashingSource(),
+        destination_factory=lambda: FakeDestinationRepository(),
+        temp_storage=temp_storage,
+        worker_concurrency=1,
+        max_item_retries=1,
+        # Deliberadamente enorme: si el bug estuviera presente, el elemento
+        # quedaría reclamado (lease vigente) por esta cantidad de segundos
+        # sin que nada lo libere. La prueba falla si el estado/lease
+        # dependen de esperar este timeout.
+        item_timeout_seconds=999_999,
+    )
+
+    db = session_factory()
+    item = db.execute(MigrationItemModel.__table__.select()).mappings().one()
+    events = db.execute(JournalEvent.__table__.select()).mappings().all()
+    db.close()
+
+    assert item["state"] == MigrationItemState.FAILED.value
+    assert item["lease_owner"] is None
+    assert item["lease_expires_at"] is None
+    assert item["last_error_code"] == "UNEXPECTED_ERROR"
+    assert any(e["event_type"] == "ITEM_FAILED" and e["error_code"] == "UNEXPECTED_ERROR" for e in events)

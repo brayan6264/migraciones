@@ -3,11 +3,13 @@ from __future__ import annotations
 import logging
 import threading
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from document_engine.adapters.database.models import JournalEvent
 from document_engine.adapters.database.models import MigrationBatch as MigrationBatchModel
 from document_engine.adapters.database.models import MigrationItem as MigrationItemModel
 from document_engine.adapters.filesystem.temp_storage import TempFileStorage
@@ -55,6 +57,88 @@ def is_rename_running(batch_id: str) -> bool:
     return batch_id in _active_rename_runs
 
 
+def _mark_item_crashed(
+    item_id: str,
+    batch_id: str,
+    exc: Exception,
+    *,
+    session_factory: Callable[[], Session],
+    max_item_retries: int,
+    retry_base_seconds: int,
+) -> None:
+    """Libera el lease y deja constancia de un fallo que `Builder.process_item`
+    NO tradujo a `TransientError`/`PermanentError` (p. ej. un corte de la
+    conexión a la base de datos a mitad de un `commit`).
+
+    Sin esto, el elemento queda con el estado que tenía al reclamarse
+    (`READY`/`RETRY_PENDING`, porque `process_item` no llegó a comitear
+    nada) pero con el lease largo del `claim` original todavía vigente —
+    invisible para `claim_next_item` durante horas, sin ningún rastro en la
+    BD (el `JournalEvent` que armó `process_item` se perdió junto con la
+    sesión rota) y sin nada visible salvo el `logger.exception` de arriba.
+
+    Usa una sesión NUEVA a propósito: la que traía `Builder` puede estar en
+    el estado roto que causó la excepción."""
+    try:
+        db = session_factory()
+    except Exception:  # noqa: BLE001 - no podemos ni abrir sesión: solo registrar
+        logger.exception(
+            "No se pudo abrir sesión de recuperación para %s en el lote %s", item_id, batch_id
+        )
+        return
+    try:
+        item = db.get(MigrationItemModel, item_id)
+        if item is None or item.state in _TERMINAL_STATES:
+            return
+        item.last_error_code = "UNEXPECTED_ERROR"
+        item.last_error_message = str(exc)[:2000]
+        item.attempt_count += 1
+
+        # Mismo límite de reintentos que `Builder._fail`: sin él, un fallo
+        # que se repite siempre (p. ej. un bug real) reintentaría para
+        # siempre sin nunca llegar a FAILED.
+        target_state = MigrationItemState.RETRY_PENDING
+        if item.attempt_count >= max_item_retries:
+            target_state = MigrationItemState.FAILED
+
+        # No se usa `transition()` aquí: el estado persistido puede ser
+        # cualquiera de los previos a READY/RETRY_PENDING (la excepción
+        # pudo ocurrir antes de que `process_item` avanzara nada), y este
+        # es un camino de recuperación excepcional, no un paso normal del
+        # flujo.
+        item.state = target_state.value
+        item.lease_owner = None
+        if target_state == MigrationItemState.RETRY_PENDING:
+            backoff_seconds = min(retry_base_seconds * (2**item.attempt_count), 900)
+            item.lease_expires_at = datetime.now(timezone.utc) + timedelta(seconds=backoff_seconds)
+        else:
+            item.lease_expires_at = None
+
+        db.add(
+            JournalEvent(
+                batch_id=batch_id,
+                migration_item_id=item.id,
+                event_type="ITEM_FAILED",
+                previous_state=None,
+                new_state=item.state,
+                operation="TRANSFER",
+                result="ERROR",
+                attempt_number=item.attempt_count,
+                error_code=item.last_error_code,
+                final_name=item.planned_destination_name,
+            )
+        )
+        db.commit()
+    except Exception:  # noqa: BLE001 - la recuperación misma nunca debe tumbar al worker
+        logger.exception("Fallo registrando el crash de %s en el lote %s", item_id, batch_id)
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        db.close()
+
+
 def _process_item_with_hard_timeout(
     item_id: str,
     batch_id: str,
@@ -91,8 +175,16 @@ def _process_item_with_hard_timeout(
     def _process() -> None:
         try:
             builder.process_item(item_id)
-        except Exception:  # noqa: BLE001 - no debe tumbar el pool de fondo
+        except Exception as exc:  # noqa: BLE001 - no debe tumbar el pool de fondo
             logger.exception("Error procesando %s en el lote %s", item_id, batch_id)
+            _mark_item_crashed(
+                item_id,
+                batch_id,
+                exc,
+                session_factory=session_factory,
+                max_item_retries=max_item_retries,
+                retry_base_seconds=retry_base_seconds,
+            )
 
     thread = threading.Thread(target=_process, daemon=True)
     thread.start()
