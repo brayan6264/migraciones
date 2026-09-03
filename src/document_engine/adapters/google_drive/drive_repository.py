@@ -289,7 +289,18 @@ class GoogleDriveRepository(SourceRepositoryPort):
         try:
             data = json.loads(exc.content.decode("utf-8"))
         except (ValueError, AttributeError):
-            return False
+            # Un 403 con cuerpo NO-JSON es, en la práctica, la página HTML
+            # "Sorry... your computer or network may be sending automated
+            # queries" que sirve el front-end de Google (no la API de Drive)
+            # cuando detecta demasiadas peticiones desde una misma IP —
+            # frecuente con varios workers en paralelo golpeando la API a la
+            # vez. La API de Drive en sí SIEMPRE devuelve JSON estructurado
+            # para un permiso realmente denegado; un cuerpo no-JSON nunca es
+            # eso. Sin este caso, se clasificaba como PermanentError
+            # (DRIVE_PERMISSION_DENIED) y el elemento quedaba FAILED para
+            # siempre en el primer intento, en vez de reintentarse con
+            # backoff hasta que el bloqueo temporal de Google se levante.
+            return True
         error = data.get("error") if isinstance(data, dict) else None
         if not isinstance(error, dict):
             return False
